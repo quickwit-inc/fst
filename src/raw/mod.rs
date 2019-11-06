@@ -689,6 +689,9 @@ impl<'f, A: Automaton> Stream<'f, A> {
     fn new(meta: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound) -> Self {
         Stream(StreamWithState::new(meta, data, aut, min, max))
     }
+    fn reverse(&mut self) {
+        self.0.decending = true;
+    }
 
     /// Convert this stream into a vector of byte strings and outputs.
     ///
@@ -774,7 +777,9 @@ pub struct StreamWithState<'f, A=AlwaysMatch> where A: Automaton {
     inp: Vec<u8>,
     empty_output: Option<Output>,
     stack: Vec<StreamState<'f, A::State>>,
-    end_at: Bound,
+    max: Bound,
+    min: Bound,
+    decending: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -795,9 +800,11 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             inp: Vec::with_capacity(16),
             empty_output: None,
             stack: vec![],
-            end_at: max,
+            max: max,
+            min: min,
+            decending: false,
         };
-        rdr.seek_min(min);
+        rdr.seek();
         rdr
     }
 
@@ -808,9 +815,11 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// This theoretically should be straight-forward, but we need to make
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
-    fn seek_min(&mut self, min: Bound) {
-        if min.is_empty() {
-            if min.is_inclusive() {
+    fn seek(&mut self) {
+        let bound : &Bound = if(self.decending) { &self.max } else { &self.min };
+            &self.min;
+        if bound.is_empty() {
+            if bound.is_inclusive() {
                 self.empty_output = self.fst.empty_final_output(self.data);
             }
             self.stack.clear();
@@ -822,12 +831,12 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             }];
             return;
         }
-        let (key, inclusive) = match min {
-            Bound::Excluded(ref min) => {
-                (min, false)
+        let (key, inclusive) = match bound {
+            Bound::Excluded(ref bound) => {
+                (bound, false)
             }
-            Bound::Included(ref min) => {
-                (min, true)
+            Bound::Included(ref bound) => {
+                (bound, true)
             }
             Bound::Unbounded => unreachable!(),
         };
@@ -895,7 +904,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     #[inline]
     fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
         if let Some(out) = self.empty_output.take() {
-            if self.end_at.exceeded_by(&[]) {
+            if self.max.exceeded_by(&[]) {
                 self.stack.clear();
                 return None;
             }
@@ -927,7 +936,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                 out,
                 aut_state: next_state,
             });
-            if self.end_at.exceeded_by(&self.inp) {
+            if self.max.exceeded_by(&self.inp) {
                 // We are done, forever.
                 self.stack.clear();
                 return None;
