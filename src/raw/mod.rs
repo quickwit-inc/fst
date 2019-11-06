@@ -667,6 +667,15 @@ impl Bound {
         }
     }
 
+    // Needs tests
+    fn subceed_by(&self, inp: &[u8]) -> bool {
+        match *self {
+            Bound::Included(ref v) => inp < v,
+            Bound::Excluded(ref v) => inp <= v,
+            Bound::Unbounded => false,
+        }
+    }
+
     fn is_empty(&self) -> bool {
         match *self {
             Bound::Included(ref v) => v.is_empty(),
@@ -691,6 +700,9 @@ impl<'f, A: Automaton> Stream<'f, A> {
     }
     fn reverse(&mut self) {
         self.0.decending = true;
+        self.0.stack.clear();
+        self.0.inp.clear();
+        self.0.seek();
     }
 
     /// Convert this stream into a vector of byte strings and outputs.
@@ -816,16 +828,17 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
     fn seek(&mut self) {
-        let bound : &Bound = if(self.decending) { &self.max } else { &self.min };
-            &self.min;
+        let bound : &Bound = if self.decending { &self.max } else { &self.min };
         if bound.is_empty() {
             if bound.is_inclusive() {
                 self.empty_output = self.fst.empty_final_output(self.data);
             }
             self.stack.clear();
+            let node = self.fst.root(self.data);
+            // If descending, starting transition needs to be the rightmost one. 
             self.stack = vec![StreamState {
-                node:  self.fst.root(self.data),
-                trans: 0,
+                node:  node,
+                trans: self.starting_trans(node),
                 out: Output::zero(),
                 aut_state: self.aut.start(),
             }];
@@ -858,7 +871,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     self.inp.push(b);
                     self.stack.push(StreamState {
                         node,
-                        trans: i+1,
+                        trans: self.next_trans(i),
                         out,
                         aut_state: prev_state,
                     });
@@ -900,11 +913,29 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             }
         }
     }
+    
+    // Given a node, get the first trans when iterating.
+    fn starting_trans(&self, node: Node) -> usize {
+        if self.decending && node.len() > 0 {
+            node.len() - 1
+        } else {
+            0
+        }
+    }
+
+    // Given a trans, get the next trans when iterating.
+    fn next_trans(&self, i: usize) -> usize {
+        if self.decending {
+            i - 1
+        } else {
+            i + 1
+        }
+    }
 
     #[inline]
     fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
         if let Some(out) = self.empty_output.take() {
-            if self.max.exceeded_by(&[]) {
+            if self.is_out_of_bounds(&[]) {
                 self.stack.clear();
                 return None;
             }
@@ -914,7 +945,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             }
         }
         while let Some(state) = self.stack.pop() {
-            if state.trans >= state.node.len() || !self.aut.can_match(&state.aut_state) {
+            if state.trans >= state.node.len() || state.trans < 0 || !self.aut.can_match(&state.aut_state) {
                 if state.node.addr() != self.fst.root_addr {
                     self.inp.pop().unwrap();
                 }
@@ -927,16 +958,16 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             let next_node = self.fst.node(trans.addr, self.data);
             self.inp.push(trans.inp);
             self.stack.push(StreamState {
-                trans: state.trans + 1, .. state
+                trans: self.next_trans(state.trans), .. state
             });
             let ns = transform(&next_state);
             self.stack.push(StreamState {
                 node: next_node,
-                trans: 0,
+                trans: self.starting_trans(next_node),
                 out,
                 aut_state: next_state,
             });
-            if self.max.exceeded_by(&self.inp) {
+            if self.is_out_of_bounds(&self.inp) {
                 // We are done, forever.
                 self.stack.clear();
                 return None;
@@ -947,6 +978,15 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             }
         }
         None
+    }
+
+    // Given something, is it out of bounds?
+    fn is_out_of_bounds(&self, inp: &[u8]) -> bool {
+        if self.decending {
+           self.min.subceed_by(inp) 
+        } else {
+           self.max.exceeded_by(inp)
+        }
     }
 }
 

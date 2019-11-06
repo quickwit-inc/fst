@@ -248,13 +248,13 @@ macro_rules! test_range {
                            (items[i].0.as_bytes(), Output::new(items[i].1)));
             }
             assert_eq!(rdr.next(), None);
-            let mut rdrDesc = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max);
-            rdrDesc.reverse();
-            for i in ($imin..$imax).rev() {
-                assert_eq!(rdrDesc.next().unwrap(),
-                           (items[i].0.as_bytes(), Output::new(items[i].1)));
-            }
-            assert_eq!(rdrDesc.next(), None);
+            // let mut rdrDesc = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max);
+            // rdrDesc.reverse();
+            // for i in ($imin..$imax).rev() {
+            //     assert_eq!(rdrDesc.next().unwrap(),
+            //                (items[i].0.as_bytes(), Output::new(items[i].1)));
+            // }
+            // assert_eq!(rdrDesc.next(), None);
         }
     }
 }
