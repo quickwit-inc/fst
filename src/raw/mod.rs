@@ -899,14 +899,15 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         if !self.stack.is_empty() {
             let last = self.stack.len() - 1;
             if inclusive {
-                self.stack[last].trans -= 1;
+                self.stack[last].trans = self.next_trans(self.stack[last].trans);
                 self.inp.pop();
             } else {
                 let node = self.stack[last].node;
                 let trans = self.stack[last].trans;
+                let next_node = self.fst.node(node.transition(self.next_trans(trans - 1)).addr, self.data);
                 self.stack.push(StreamState {
-                    node: self.fst.node(node.transition(trans - 1).addr, self.data),
-                    trans: 0,
+                    node: next_node,
+                    trans: self.starting_trans(next_node),
                     out,
                     aut_state,
                 });
@@ -926,7 +927,11 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     // Given a trans, get the next trans when iterating.
     fn next_trans(&self, i: usize) -> usize {
         if self.decending {
-            i - 1
+            if i >  0 {
+                i - 1
+            } else {
+                100000000
+            }
         } else {
             i + 1
         }
@@ -945,7 +950,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             }
         }
         while let Some(state) = self.stack.pop() {
-            if state.trans >= state.node.len() || state.trans < 0 || !self.aut.can_match(&state.aut_state) {
+            if state.trans >= state.node.len() || !self.aut.can_match(&state.aut_state) {
                 if state.node.addr() != self.fst.root_addr {
                     self.inp.pop().unwrap();
                 }

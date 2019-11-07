@@ -235,27 +235,41 @@ macro_rules! test_range {
         imax: $imax:expr,
         $($s:expr),*
     ) => {
+    // Creating a module is the only way to generate multiple tests per macro?
+    mod $name {
+
+        use automaton::AlwaysMatch;
+        use error::Error;
+        use raw::{self, VERSION, Builder, Bound, Fst, Stream, Output};
+        use stream::Streamer;
+        use std::ops::Deref;
+
         #[test]
-        fn $name() {
+        fn in_order() {
             let items: Vec<&'static str> = vec![$($s),*];
             let items: Vec<_> =
                 items.into_iter().enumerate()
                      .map(|(i, k)| (k, i as u64)).collect();
-            let fst: Fst = fst_map(items.clone()).into();
+            let fst: Fst = raw::tests::fst_map(items.clone()).into();
             let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max);
-            for i in $imin..$imax {
-                assert_eq!(rdr.next().unwrap(),
+        }
+
+        #[test]
+        fn reverse_order() {
+            let items: Vec<&'static str> = vec![$($s),*];
+            let items: Vec<_> =
+                items.into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+            let fst: Fst = raw::tests::fst_map(items.clone()).into();
+            let mut rdr_desc = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max);
+            rdr_desc.reverse();
+            for i in ($imin..$imax).rev() {
+                 assert_eq!(rdr_desc.next().unwrap(),
                            (items[i].0.as_bytes(), Output::new(items[i].1)));
             }
-            assert_eq!(rdr.next(), None);
-            // let mut rdrDesc = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max);
-            // rdrDesc.reverse();
-            // for i in ($imin..$imax).rev() {
-            //     assert_eq!(rdrDesc.next().unwrap(),
-            //                (items[i].0.as_bytes(), Output::new(items[i].1)));
-            // }
-            // assert_eq!(rdrDesc.next(), None);
+            assert_eq!(rdr_desc.next(), None);
         }
+    }
     }
 }
 
