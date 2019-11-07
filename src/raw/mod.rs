@@ -904,7 +904,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             } else {
                 let node = self.stack[last].node;
                 let trans = self.stack[last].trans;
-                let next_node = self.fst.node(node.transition(self.next_trans(trans - 1)).addr, self.data);
+                let next_node = self.fst.node(node.transition(self.next_trans(trans)).addr, self.data);
                 self.stack.push(StreamState {
                     node: next_node,
                     trans: self.starting_trans(next_node),
