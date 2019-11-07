@@ -239,8 +239,7 @@ macro_rules! test_range {
     mod $name {
 
         use automaton::AlwaysMatch;
-        use error::Error;
-        use raw::{self, VERSION, Builder, Bound, Fst, Stream, Output};
+        use raw::{self, Bound, Fst, Stream, Output};
         use stream::Streamer;
         use std::ops::Deref;
 

@@ -828,14 +828,16 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
     fn seek(&mut self) {
+        // Find the bound we are going against.
         let bound : &Bound = if self.decending { &self.max } else { &self.min };
+        // If there is no bound.
         if bound.is_empty() {
             if bound.is_inclusive() {
                 self.empty_output = self.fst.empty_final_output(self.data);
             }
+            // Push root node to stack.
             self.stack.clear();
             let node = self.fst.root(self.data);
-            // If descending, starting transition needs to be the rightmost one. 
             self.stack = vec![StreamState {
                 node:  node,
                 trans: self.starting_trans(node),
@@ -862,9 +864,14 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         let mut node = self.fst.root(self.data);
         let mut out = Output::zero();
         let mut aut_state = self.aut.start();
+        // For every character in the input bound.
+        println!("finding...");
         for &b in key {
             match node.find_input(b) {
+                // If the character exists in the trie.
                 Some(i) => {
+                    // Push that node to the stack.
+                    println!("match {} - {}", b as char, self.stack.len());
                     let t = node.transition(i);
                     let prev_state = aut_state;
                     aut_state = self.aut.accept(&prev_state, b);
@@ -884,10 +891,14 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     // Since this is a minimum bound, we need to find the
                     // first transition in this node that proceeds the current
                     // input byte.
+                    println!("miss {}", b as char);
                     self.stack.push(StreamState {
                         node,
-                        trans: node.transitions()
-                            .position(|t| t.inp > b)
+                        trans: 
+                            // Get the transitions in the right order
+                            if self.decending { node.transitions_reverse() } else { node.transitions() }
+                            // Find the position of the first item that is smaller.
+                            .position(|t| if self.decending { t.inp < b } else { t.inp > b })
                             .unwrap_or(node.len()),
                         out,
                         aut_state,
@@ -896,6 +907,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                 }
             }
         }
+        println!("checking stack");
         if !self.stack.is_empty() {
             let last = self.stack.len() - 1;
             if inclusive {
@@ -930,7 +942,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             if i >  0 {
                 i - 1
             } else {
-                100000000
+                0
             }
         } else {
             i + 1
@@ -939,18 +951,24 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
 
     #[inline]
     fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
+        println!("next {}", self.stack.len());
         if let Some(out) = self.empty_output.take() {
             if self.is_out_of_bounds(&[]) {
+                println!("out of bounds 1");
                 self.stack.clear();
                 return None;
             }
             let start = self.aut.start();
             if self.aut.is_match(&start) {
+                println!("?");
                 return Some((&[], out, transform(&start)));
             }
         }
+        println!("next 2 {}", self.stack.len());
         while let Some(state) = self.stack.pop() {
+            println!("popping stack {}", self.stack.len());
             if state.trans >= state.node.len() || !self.aut.can_match(&state.aut_state) {
+                println!("done with node trans: {}, node: {}", state.trans, state.node.len());
                 if state.node.addr() != self.fst.root_addr {
                     self.inp.pop().unwrap();
                 }
@@ -974,24 +992,23 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             });
             if self.is_out_of_bounds(&self.inp) {
                 // We are done, forever.
+                println!("out of bounds 2");
                 self.stack.clear();
                 return None;
             }
             if next_node.is_final() && is_match {
+                println!("final");
                 let out = out.cat(next_node.final_output());
                 return Some((&self.inp, out, ns));
             }
         }
+        println!("no stack");
         None
     }
 
     // Given something, is it out of bounds?
     fn is_out_of_bounds(&self, inp: &[u8]) -> bool {
-        if self.decending {
-           self.min.subceed_by(inp) 
-        } else {
-           self.max.exceeded_by(inp)
-        }
+        self.min.subceed_by(inp) || self.max.exceeded_by(inp)
     }
 }
 

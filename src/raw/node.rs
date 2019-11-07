@@ -125,7 +125,14 @@ impl<'f> Node<'f> {
     /// order.
     #[inline]
     pub fn transitions<'n>(&'n self) -> Transitions<'f, 'n> {
-        Transitions { node: self, range: 0..self.len() }
+        Transitions { node: self, range: 0..self.len(), reverse: false }
+    }
+    
+    #[inline]
+    pub fn transitions_reverse<'n>(&'n self) -> Transitions<'f, 'n> {
+        let mut transitions = self.transitions();
+        transitions.reverse = true;
+        transitions
     }
 
     /// Returns the transition at index `i`.
@@ -767,6 +774,7 @@ impl PackSizes {
 pub struct Transitions<'f: 'n, 'n> {
     node: &'n Node<'f>,
     range: Range<usize>,
+    reverse: bool,
 }
 
 impl<'f, 'n> Iterator for Transitions<'f, 'n> {
@@ -774,7 +782,7 @@ impl<'f, 'n> Iterator for Transitions<'f, 'n> {
 
     #[inline]
     fn next(&mut self) -> Option<Transition> {
-        self.range.next().map(|i| self.node.transition(i))
+        self.range.next().map(|i| self.node.transition(if self.reverse { self.node.len() - 1 - 1 } else { i }))
     }
 }
 
