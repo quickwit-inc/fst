@@ -1,0 +1,65 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'tantivy-fst'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=tantivy-fst"
+                ],
+                "filter": {
+                    "name": "tantivy-fst",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'build'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=build",
+                    "--package=tantivy-fst"
+                ],
+                "filter": {
+                    "name": "build",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'search'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=search",
+                    "--package=tantivy-fst"
+                ],
+                "filter": {
+                    "name": "search",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
