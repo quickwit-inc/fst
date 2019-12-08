@@ -650,7 +650,7 @@ impl<'a, 'f, A: 'a + Automaton> IntoStreamer<'a> for StreamWithStateBuilder<'f, 
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Bound {
     Included(Vec<u8>),
     Excluded(Vec<u8>),
@@ -686,7 +686,7 @@ pub struct Stream<'f, A=AlwaysMatch>(StreamWithState<'f, A>) where A: Automaton;
 
 impl<'f, A: Automaton> Stream<'f, A> {
     fn new(meta: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound) -> Self {
-        Stream(StreamWithState::new(meta, data, aut, min, max))
+        Self(StreamWithState::new(meta, data, aut, min, max))
     }
 
     /// Convert this stream into a vector of byte strings and outputs.
@@ -749,6 +749,11 @@ impl<'f, A: Automaton> Stream<'f, A> {
         }
         vs
     }
+
+    pub fn reverse(mut self) -> Self {
+        self.0.reverse();
+        self
+    }
 }
 
 impl<'f, 'a, A: Automaton> Streamer<'a> for Stream<'f, A> {
@@ -766,6 +771,7 @@ impl<'f, 'a, A: Automaton> Streamer<'a> for Stream<'f, A> {
 /// the stream. By default, no filtering is done.
 ///
 /// The `'f` lifetime parameter refers to the lifetime of the underlying fst.
+#[derive(Clone)]
 pub struct StreamWithState<'f, A=AlwaysMatch> where A: Automaton {
     fst: &'f FstMeta,
     data: &'f [u8],
@@ -773,7 +779,10 @@ pub struct StreamWithState<'f, A=AlwaysMatch> where A: Automaton {
     inp: Vec<u8>,
     empty_output: Option<Output>,
     stack: Vec<StreamState<'f, A::State>>,
-    end_at: Bound,
+    min: Bound,
+    max: Bound,
+    has_seeked: bool,
+    reversed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -782,6 +791,7 @@ struct StreamState<'f, S> {
     trans: usize,
     out: Output,
     aut_state: S,
+    done: bool,
 }
 
 impl<'f, A: Automaton> StreamWithState<'f, A> {
@@ -794,9 +804,11 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             inp: Vec::with_capacity(16),
             empty_output: None,
             stack: vec![],
-            end_at: max,
+            min: min,
+            max: max,
+            has_seeked: false,
+            reversed: false,
         };
-        rdr.seek_min(min);
         rdr
     }
 
@@ -807,26 +819,29 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// This theoretically should be straight-forward, but we need to make
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
-    fn seek_min(&mut self, min: Bound) {
-        if min.is_empty() {
-            if min.is_inclusive() {
+    fn seek(&mut self) {
+        let bound: &Bound = &self.min;
+        if bound.is_empty() {
+            if bound.is_inclusive() {
                 self.empty_output = self.fst.empty_final_output(self.data);
             }
             self.stack.clear();
+            let node = self.fst.root(self.data);
             self.stack = vec![StreamState {
-                node:  self.fst.root(self.data),
-                trans: 0,
+                node: node, 
+                trans: self.starting_transition(&node),
                 out: Output::zero(),
                 aut_state: self.aut.start(),
+                done: false,
             }];
             return;
         }
-        let (key, inclusive) = match min {
-            Bound::Excluded(ref min) => {
-                (min, false)
+        let (key, inclusive) = match bound {
+            Bound::Excluded(ref bound) => {
+                (bound, false)
             }
-            Bound::Included(ref min) => {
-                (min, true)
+            Bound::Included(ref bound) => {
+                (bound, true)
             }
             Bound::Unbounded => unreachable!(),
         };
@@ -848,9 +863,10 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     self.inp.push(b);
                     self.stack.push(StreamState {
                         node,
-                        trans: i+1,
+                        trans: self.next_transition(&node, i).unwrap(),
                         out,
                         aut_state: prev_state,
+                        done: false,
                     });
                     out = out.cat(t.out);
                     node = self.fst.node(t.addr, self.data);
@@ -868,6 +884,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                             .unwrap_or(node.len()),
                         out,
                         aut_state,
+                        done: false,
                     });
                     return;
                 }
@@ -881,20 +898,43 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             } else {
                 let node = self.stack[last].node;
                 let trans = self.stack[last].trans;
+                let next_node = self.fst.node(node.transition(trans - 1).addr, self.data);
+                let done = false;
                 self.stack.push(StreamState {
-                    node: self.fst.node(node.transition(trans - 1).addr, self.data),
-                    trans: 0,
+                    node: next_node,
+                    trans: self.starting_transition(&next_node),
                     out,
                     aut_state,
+                    done,
                 });
             }
         }
     }
 
     #[inline]
+    fn starting_transition(&self, node: &Node<'f>) -> usize {
+        0
+    }
+
+    #[inline]
+    fn next_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        // transition done
+        Some(current_transition + 1)
+    }
+
+    // Not sure how to make clone work.
+    fn reverse(&mut self) {
+        self.reversed = !self.reversed;
+    }
+
+    #[inline]
     fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
+        if !self.has_seeked {
+            self.seek();
+            self.has_seeked = true;
+        }
         if let Some(out) = self.empty_output.take() {
-            if self.end_at.exceeded_by(&[]) {
+            if self.max.exceeded_by(&[]) {
                 self.stack.clear();
                 return None;
             }
@@ -917,16 +957,17 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             let next_node = self.fst.node(trans.addr, self.data);
             self.inp.push(trans.inp);
             self.stack.push(StreamState {
-                trans: state.trans + 1, .. state
+                trans: self.next_transition(&state.node, state.trans).unwrap(), .. state
             });
             let ns = transform(&next_state);
             self.stack.push(StreamState {
                 node: next_node,
-                trans: 0,
+                trans: self.starting_transition(&next_node),
                 out,
                 aut_state: next_state,
+                done: false,
             });
-            if self.end_at.exceeded_by(&self.inp) {
+            if self.max.exceeded_by(&self.inp) {
                 // We are done, forever.
                 self.stack.clear();
                 return None;
