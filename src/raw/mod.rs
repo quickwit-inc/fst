@@ -666,6 +666,14 @@ impl Bound {
         }
     }
 
+    fn subceeded_by(&self, inp: &[u8]) -> bool {
+        match *self {
+            Bound::Included(ref v) => inp < v,
+            Bound::Excluded(ref v) => inp <= v,
+            Bound::Unbounded => false,
+        }
+    }
+
     fn is_empty(&self) -> bool {
         match *self {
             Bound::Included(ref v) => v.is_empty(),
@@ -783,6 +791,8 @@ pub struct StreamWithState<'f, A=AlwaysMatch> where A: Automaton {
     max: Bound,
     has_seeked: bool,
     reversed: bool,
+    return_stack: Vec<Option<(Vec<u8>, Output)>>,
+    return_pointer: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -808,6 +818,8 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             max: max,
             has_seeked: false,
             reversed: false,
+            return_stack: Vec::new(),
+            return_pointer: Vec::new(),
         };
         rdr
     }
@@ -820,19 +832,20 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
     fn seek(&mut self) {
-        let bound: &Bound = &self.min;
+        let bound: &Bound = if !self.reversed { &self.min } else { &self.max };
         if bound.is_empty() {
             if bound.is_inclusive() {
                 self.empty_output = self.fst.empty_final_output(self.data);
             }
             self.stack.clear();
             let node = self.fst.root(self.data);
+            let transition = self.starting_transition(&node);
             self.stack = vec![StreamState {
                 node: node, 
-                trans: self.starting_transition(&node),
+                trans: transition.unwrap_or_default(),
                 out: Output::zero(),
                 aut_state: self.aut.start(),
-                done: false,
+                done: transition.is_none(),
             }];
             return;
         }
@@ -861,13 +874,17 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     let prev_state = aut_state;
                     aut_state = self.aut.accept(&prev_state, b);
                     self.inp.push(b);
+                    let transition = self.next_transition(&node, i);
                     self.stack.push(StreamState {
                         node,
-                        trans: self.next_transition(&node, i).unwrap_or(100000),
+                        trans: transition.unwrap_or_default(),
                         out,
                         aut_state: prev_state,
-                        done: false,
+                        done: transition.is_none(),
                     });
+                    if self.reversed {
+                        self.return_stack.push(Some((self.inp.clone(), t.out)))
+                    }
                     out = out.cat(t.out);
                     node = self.fst.node(t.addr, self.data);
                 }
@@ -877,14 +894,33 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     // Since this is a minimum bound, we need to find the
                     // first transition in this node that proceeds the current
                     // input byte.
+                    let mut done = false;
+                    let mut trans = self.starting_transition(&node).unwrap();
+                    let mut transition = node.transition(trans);
+                    loop {
+                        transition = node.transition(trans);
+                        if !self.reversed {
+                            if transition.inp > b {
+                                break;
+                            } 
+                        } else {
+                            if transition.inp < b {
+                                break;
+                            } 
+                        }
+                        if let Some(t) = self.next_transition(&node, trans) {
+                            trans = t;
+                        } else {
+                            done = true;
+                            break;
+                        }
+                    }
                     self.stack.push(StreamState {
                         node,
-                        trans: node.transitions()
-                            .position(|t| t.inp > b)
-                            .unwrap_or(node.len()),
+                        trans,
                         out,
                         aut_state,
-                        done: false,
+                        done,
                     });
                     return;
                 }
@@ -892,37 +928,52 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         }
         if !self.stack.is_empty() {
             let last = self.stack.len() - 1;
+            let state = &self.stack[last];
+            let transition = self.previous_transition(&state.node, state.trans);
             if inclusive {
-                self.stack[last].trans -= 1;
+                self.stack[last].trans = transition.unwrap_or_default();
+                self.stack[last].done = transition.is_none();
                 self.inp.pop();
+                self.return_stack.pop();
             } else {
-                let node = self.stack[last].node;
-                let trans = self.stack[last].trans;
-                let next_node = self.fst.node(node.transition(trans - 1).addr, self.data);
-                let done = false;
+                let next_node = self.fst.node(state.node.transition(transition.unwrap_or_default()).addr, self.data);
+                let starting_transition = self.starting_transition(&next_node);
                 self.stack.push(StreamState {
                     node: next_node,
-                    trans: self.starting_transition(&next_node),
+                    trans: starting_transition.unwrap_or_default(),
                     out,
                     aut_state,
-                    done,
+                    done: starting_transition.is_none(),
                 });
             }
         }
     }
 
     #[inline]
-    fn starting_transition(&self, node: &Node<'f>) -> usize {
-        if !self.reversed {
-            0
+    fn starting_transition(&self, node: &Node<'f>) -> Option<usize> {
+        if node.len() == 0 {
+            None
+        }
+        else if !self.reversed {
+            Some(0)
         } else {
-            node.len() - 1
+            Some(node.len() - 1)
         }
     }
 
     #[inline]
     fn next_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
-        if !self.reversed {
+        return self.next_or_previous_transition(node, current_transition, false)
+    }
+
+    #[inline]
+    fn previous_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        return self.next_or_previous_transition(node, current_transition, true)
+    }
+
+    #[inline]
+    fn next_or_previous_transition(&self, node: &Node<'f>, current_transition: usize, previous: bool) -> Option<usize> {
+        if (!self.reversed && !previous) || (self.reversed && previous) {
             if current_transition + 1 < node.len() {
                 Some(current_transition + 1)
             } else {
@@ -939,7 +990,22 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
 
     // Not sure how to make clone work.
     fn reverse(&mut self) {
+        self.inp.clear();
+        self.stack.clear();
+        self.has_seeked = false;
         self.reversed = !self.reversed;
+    }
+
+    fn out_of_bounds(&self, inp: &[u8]) -> bool {
+        if !self.reversed {
+            self.max.exceeded_by(inp)
+        } else {
+            self.min.subceeded_by(inp)
+        }
+    }
+    
+    fn out_of_bounds_absolute(&self, inp: &[u8]) -> bool {
+        self.min.subceeded_by(inp) || self.max.exceeded_by(inp)
     }
 
     #[inline]
@@ -948,20 +1014,30 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             self.seek();
             self.has_seeked = true;
         }
-        if let Some(out) = self.empty_output.take() {
-            if self.max.exceeded_by(&[]) {
-                self.stack.clear();
-                return None;
-            }
-            let start = self.aut.start();
-            if self.aut.is_match(&start) {
-                return Some((&[], out, transform(&start)));
+        if !self.reversed {
+            if let Some(out) = self.empty_output.take() {
+                if self.out_of_bounds(&[]) {
+                    self.stack.clear();
+                    return None;
+                }
+                let start = self.aut.start();
+                if self.aut.is_match(&start) {
+                    return Some((&[], out, transform(&start)));
+                }
             }
         }
         while let Some(state) = self.stack.pop() {
-            if state.trans >= state.node.len() || !self.aut.can_match(&state.aut_state) {
+            if state.done || !self.aut.can_match(&state.aut_state) {
                 if state.node.addr() != self.fst.root_addr {
                     self.inp.pop().unwrap();
+                    if let Some(t) = self.return_stack.pop() {
+                        if let Some((inp, out)) = t {
+                            if !self.out_of_bounds_absolute(&inp) && self.aut.can_match(&state.aut_state) { 
+                                self.return_pointer = inp;
+                                return Some((&self.return_pointer, out, transform(&state.aut_state)))
+                            }
+                        }
+                    }
                 }
                 continue;
             }
@@ -971,25 +1047,47 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             let is_match = self.aut.is_match(&next_state);
             let next_node = self.fst.node(trans.addr, self.data);
             self.inp.push(trans.inp);
+            let current_transition = self.next_transition(&state.node, state.trans);
             self.stack.push(StreamState {
-                trans: self.next_transition(&state.node, state.trans).unwrap_or(10000), .. state
+                trans: current_transition.unwrap_or_default(), done: current_transition.is_none(), .. state
             });
             let ns = transform(&next_state);
+            let next_transition = self.starting_transition(&next_node);
             self.stack.push(StreamState {
                 node: next_node,
-                trans: self.starting_transition(&next_node),
+                trans: next_transition.unwrap_or_default(),
                 out,
                 aut_state: next_state,
-                done: false,
+                done: next_transition.is_none(),
             });
-            if self.max.exceeded_by(&self.inp) {
+            if !self.reversed && self.out_of_bounds(&self.inp) {
                 // We are done, forever.
                 self.stack.clear();
                 return None;
             }
             if next_node.is_final() && is_match {
                 let out = out.cat(next_node.final_output());
-                return Some((&self.inp, out, ns));
+                if !self.reversed {
+                    return Some((&self.inp, out, ns));
+                } else {
+                    self.return_stack.push(Some((self.inp.clone(), out)));
+                }
+            } else {
+                if self.reversed {
+                    self.return_stack.push(None);
+                }
+            }
+        }
+        if self.reversed {
+            if let Some(out) = self.empty_output.take() {
+                if self.out_of_bounds(&[]) {
+                    self.stack.clear();
+                    return None;
+                }
+                let start = self.aut.start();
+                if self.aut.is_match(&start) {
+                    return Some((&[], out, transform(&start)));
+                }
             }
         }
         None

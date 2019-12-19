@@ -248,6 +248,12 @@ macro_rules! test_range {
                            (items[i].0.as_bytes(), Output::new(items[i].1)));
             }
             assert_eq!(rdr.next(), None);
+            let mut rdr = rdr.reverse();
+            for i in ($imin..$imax).rev() {
+                assert_eq!(rdr.next().unwrap(),
+                           (items[i].0.as_bytes(), Output::new(items[i].1)));
+            }
+            assert_eq!(rdr.next(), None);
         }
     }
 }
@@ -483,10 +489,13 @@ fn starting_transition() {
     let fst: Fst = fst_map(items.clone()).into();
     let stream = fst.stream();
     let root = fst.root();
-    assert_eq!(stream.0.starting_transition(&root), 0);
+    assert_eq!(stream.0.starting_transition(&root).unwrap(), 0);
     let stream = stream.reverse();
-    assert_eq!(stream.0.starting_transition(&root), 3);
+    assert_eq!(stream.0.starting_transition(&root).unwrap(), 3);
+    let a = fst.node(root.transition(0).addr);
+    assert_eq!(stream.0.starting_transition(&a), None);
 }
+
 
 #[test]
 fn next_transition() {
@@ -500,10 +509,57 @@ fn next_transition() {
     assert_eq!(stream.0.next_transition(&a, 0).unwrap(), 1);
     assert_eq!(stream.0.next_transition(&a, 1).unwrap(), 2);
     assert_eq!(stream.0.next_transition(&a, 2), None);
+    assert_eq!(stream.0.previous_transition(&a, 0), None);
+    assert_eq!(stream.0.previous_transition(&a, 1).unwrap(), 0);
+    assert_eq!(stream.0.previous_transition(&a, 2).unwrap(), 1);
     let stream = stream.reverse();
     assert_eq!(stream.0.next_transition(&a, 0), None);
     assert_eq!(stream.0.next_transition(&a, 1).unwrap(), 0);
     assert_eq!(stream.0.next_transition(&a, 2).unwrap(), 1);
+    assert_eq!(stream.0.previous_transition(&a, 0).unwrap(), 1);
+    assert_eq!(stream.0.previous_transition(&a, 1).unwrap(), 2);
+    assert_eq!(stream.0.previous_transition(&a, 2), None);
+}
+
+fn test_reverse(input: Vec<&str>) {
+    let len = input.len();
+    test_reverse_range(input, Bound::Unbounded, Bound::Unbounded, 0, len);
+}
+
+fn test_reverse_range(input: Vec<&str>, min: Bound, max: Bound, imin: usize, imax: usize) {
+    let items: Vec<_> =
+    input.into_iter().enumerate()
+         .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let mut stream = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, min, max);
+    stream = stream.reverse();
+    for i in (imin..imax).rev() {
+        let next = stream.next();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap(), (items[i].0.as_bytes(), Output::new(items[i].1)));
+    }
+    assert_eq!(stream.next(), None);
+}
+
+#[test] 
+fn reverse_traversal() {
+    test_reverse(vec!["a"]);
+    test_reverse(vec!["a", "b"]);
+    test_reverse(vec!["a", "b", "c"]);
+    test_reverse(vec!["aa", "ab", "ac"]);
+    test_reverse(vec!["a", "ab"]);
+    test_reverse(vec!["a", "ab", "abc", "abcd", "abcde", "abd", "abdx"]);
+    test_reverse(vec!["a", "ab", "abc", "abcd", "abcde", "abe"]);
+}
+
+#[test] 
+fn reverse_traversal_bounds() {
+    test_reverse_range(vec!["a", "ab", "abc", "abcd", "abcde", "xyz"], Bound::Included(b"abd".to_vec()), Bound::Unbounded, 5, 6);
+    test_reverse_range(vec!["a", "b", "y", "z"], Bound::Included(vec![b'a']), Bound::Included(vec![b'z']), 0, 4);
+    test_reverse_range(vec!["a", "ab", "abc", "abcd", "abcde", "abd"], Bound::Unbounded, Bound::Included(b"abd".to_vec()), 0, 6);
+    test_reverse_range(vec!["a", "ab", "abc", "abcd", "abcde", "abd", "abdx"], Bound::Unbounded, Bound::Included(b"abd".to_vec()), 0, 6);
+    test_reverse_range(vec!["a", "ab", "abc", "abcd", "abcde", "abe"],  Bound::Unbounded, Bound::Excluded(b"abd".to_vec()), 0, 5);
+    test_reverse_range(vec!["", "a"], Bound::Included(vec![]), Bound::Unbounded, 0, 2);
 }
 
 #[test]
