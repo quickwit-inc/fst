@@ -1010,6 +1010,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             self.has_seeked = true;
         }
         if !self.reversed {
+            // We first test the empty array `&[]` as a special case  
             if let Some(out) = self.empty_output.take() {
                 if self.out_of_bounds(&[]) {
                     self.stack.clear();
@@ -1024,12 +1025,12 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         while let Some(state) = self.stack.pop() {
             if state.done || !self.aut.can_match(&state.aut_state) {
                 if state.node.addr() != self.fst.root_addr {
-                    let inp_two = self.inp.clone();
+                    let inp = self.inp.clone();
                     self.inp.pop().unwrap();
                     if self.return_stack > 0 {
                         self.return_stack -= 1;
-                        if state.node.is_final() && !self.out_of_bounds(&inp_two) && self.aut.can_match(&state.aut_state) { 
-                            self.return_pointer = inp_two;
+                        if state.node.is_final() && !self.out_of_bounds(&inp) && self.aut.can_match(&state.aut_state) { 
+                            self.return_pointer = inp;
                             return Some((&self.return_pointer, state.out, transform(&state.aut_state)))
                         }
                     }
