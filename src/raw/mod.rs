@@ -791,8 +791,7 @@ pub struct StreamWithState<'f, A=AlwaysMatch> where A: Automaton {
     max: Bound,
     has_seeked: bool,
     reversed: bool,
-    return_stack: Vec<Option<(Vec<u8>, Output)>>,
-    return_pointer: Vec<u8>,
+    inp_return: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -807,7 +806,7 @@ struct StreamState<'f, S> {
 impl<'f, A: Automaton> StreamWithState<'f, A> {
 
     fn new(fst: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound) -> Self {
-        let mut rdr = StreamWithState {
+        StreamWithState {
             fst,
             data,
             aut,
@@ -818,10 +817,8 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             max: max,
             has_seeked: false,
             reversed: false,
-            return_stack: Vec::new(),
-            return_pointer: Vec::new(),
-        };
-        rdr
+            inp_return: Vec::new(),
+        }
     }
 
     /// Seeks the underlying stream such that the next key to be read is the
@@ -882,9 +879,6 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                         aut_state: prev_state,
                         done: transition.is_none(),
                     });
-                    if self.reversed {
-                        self.return_stack.push(Some((self.inp.clone(), t.out)))
-                    }
                     out = out.cat(t.out);
                     node = self.fst.node(t.addr, self.data);
                 }
@@ -896,17 +890,11 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     // input byte.
                     let mut done = false;
                     let mut trans = self.starting_transition(&node).unwrap();
-                    let mut transition = node.transition(trans);
+
                     loop {
-                        transition = node.transition(trans);
-                        if !self.reversed {
-                            if transition.inp > b {
-                                break;
-                            } 
-                        } else {
-                            if transition.inp < b {
-                                break;
-                            } 
+                        let transition = node.transition(trans);
+                        if (!self.reversed && transition.inp > b) || (self.reversed && transition.inp < b) {
+                            break;
                         }
                         if let Some(t) = self.next_transition(&node, trans) {
                             trans = t;
@@ -915,13 +903,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                             break;
                         }
                     }
-                    self.stack.push(StreamState {
-                        node,
-                        trans,
-                        out,
-                        aut_state,
-                        done,
-                    });
+                    self.stack.push(StreamState {node, trans, out, aut_state, done});
                     return;
                 }
             }
@@ -929,12 +911,15 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         if !self.stack.is_empty() {
             let last = self.stack.len() - 1;
             let state = &self.stack[last];
-            let transition = self.previous_transition(&state.node, state.trans);
+            let transition = if !state.done { 
+                self.previous_transition(&state.node, state.trans)
+            } else {
+                self.last_transition(&state.node)
+            };
             if inclusive {
                 self.stack[last].trans = transition.unwrap_or_default();
                 self.stack[last].done = transition.is_none();
                 self.inp.pop();
-                self.return_stack.pop();
             } else {
                 let next_node = self.fst.node(state.node.transition(transition.unwrap_or_default()).addr, self.data);
                 let starting_transition = self.starting_transition(&next_node);
@@ -950,65 +935,6 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     }
 
     #[inline]
-    fn starting_transition(&self, node: &Node<'f>) -> Option<usize> {
-        if node.len() == 0 {
-            None
-        }
-        else if !self.reversed {
-            Some(0)
-        } else {
-            Some(node.len() - 1)
-        }
-    }
-
-    #[inline]
-    fn next_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
-        return self.next_or_previous_transition(node, current_transition, false)
-    }
-
-    #[inline]
-    fn previous_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
-        return self.next_or_previous_transition(node, current_transition, true)
-    }
-
-    #[inline]
-    fn next_or_previous_transition(&self, node: &Node<'f>, current_transition: usize, previous: bool) -> Option<usize> {
-        if (!self.reversed && !previous) || (self.reversed && previous) {
-            if current_transition + 1 < node.len() {
-                Some(current_transition + 1)
-            } else {
-                None
-            }
-        } else {
-            if current_transition > 0 && node.len() > 0 {
-                Some(current_transition - 1)
-            } else {
-                None
-            }
-        }
-    }
-
-    // Not sure how to make clone work.
-    fn reverse(&mut self) {
-        self.inp.clear();
-        self.stack.clear();
-        self.has_seeked = false;
-        self.reversed = !self.reversed;
-    }
-
-    fn out_of_bounds(&self, inp: &[u8]) -> bool {
-        if !self.reversed {
-            self.max.exceeded_by(inp)
-        } else {
-            self.min.subceeded_by(inp)
-        }
-    }
-    
-    fn out_of_bounds_absolute(&self, inp: &[u8]) -> bool {
-        self.min.subceeded_by(inp) || self.max.exceeded_by(inp)
-    }
-
-    #[inline]
     fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
         if !self.has_seeked {
             self.seek();
@@ -1016,26 +942,17 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         }
         if !self.reversed {
             if let Some(out) = self.empty_output.take() {
-                if self.out_of_bounds(&[]) {
-                    self.stack.clear();
-                    return None;
-                }
-                let start = self.aut.start();
-                if self.aut.is_match(&start) {
-                    return Some((&[], out, transform(&start)));
-                }
+                return self.build_empty_output(out, transform);
             }
         }
         while let Some(state) = self.stack.pop() {
             if state.done || !self.aut.can_match(&state.aut_state) {
                 if state.node.addr() != self.fst.root_addr {
+                    self.inp_return = self.inp.clone();
                     self.inp.pop().unwrap();
-                    if let Some(t) = self.return_stack.pop() {
-                        if let Some((inp, out)) = t {
-                            if !self.out_of_bounds_absolute(&inp) && self.aut.can_match(&state.aut_state) { 
-                                self.return_pointer = inp;
-                                return Some((&self.return_pointer, out, transform(&state.aut_state)))
-                            }
+                    if self.reversed && self.stack.len() > 0 {
+                        if state.node.is_final() && !self.out_of_bounds(&self.inp_return) && self.aut.can_match(&state.aut_state) { 
+                            return Some((&self.inp_return, state.out, transform(&state.aut_state)))
                         }
                     }
                 }
@@ -1065,32 +982,112 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                 self.stack.clear();
                 return None;
             }
-            if next_node.is_final() && is_match {
-                let out = out.cat(next_node.final_output());
-                if !self.reversed {
-                    return Some((&self.inp, out, ns));
-                } else {
-                    self.return_stack.push(Some((self.inp.clone(), out)));
-                }
-            } else {
-                if self.reversed {
-                    self.return_stack.push(None);
-                }
+            if !self.reversed && next_node.is_final() && is_match {
+                return Some((&self.inp, out.cat(next_node.final_output()), ns));
             }
         }
         if self.reversed {
             if let Some(out) = self.empty_output.take() {
-                if self.out_of_bounds(&[]) {
-                    self.stack.clear();
-                    return None;
-                }
-                let start = self.aut.start();
-                if self.aut.is_match(&start) {
-                    return Some((&[], out, transform(&start)));
-                }
+                return self.build_empty_output(out, transform);
             }
         }
         None
+    }
+
+    #[inline]
+    fn build_empty_output<F, T>(&mut self, out: Output, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
+        let start = self.aut.start();
+        if self.out_of_bounds(&[]) {
+            self.stack.clear();
+            None
+        } else if self.aut.is_match(&start) {
+            Some((&[], out, transform(&start)))
+        } else {
+            None
+        }
+    }
+
+
+    #[inline]
+    fn starting_transition(&self, node: &Node<'f>) -> Option<usize> {
+        if node.len() == 0 {
+            None
+        }
+        else if !self.reversed {
+            Some(0)
+        } else {
+            Some(node.len() - 1)
+        }
+    }
+
+    #[inline]
+    fn last_transition(&self, node: &Node<'f>) -> Option<usize> {
+        if node.len() == 0 {
+            None
+        }
+        else if self.reversed {
+            Some(0)
+        } else {
+            Some(node.len() - 1)
+        }
+    }
+
+    /// Returns the next transition.
+    ///
+    /// The concept of `next` transition is dependent on whether the stream is in reverse mode or
+    /// not. If all the transitions of this node have been emitted, this method returns None.
+    #[inline]
+    fn next_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if self.reversed {
+            Self::backward_transition(node, current_transition)
+        } else {
+            Self::forward_transition(node, current_transition)
+        }
+    }
+
+    /// See `StreamWithState::next_transition`.
+    #[inline]
+    fn previous_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if self.reversed {
+            Self::forward_transition(node, current_transition)
+        } else {
+            Self::backward_transition(node, current_transition)
+        }
+    }
+
+    /// Returns the next logical transition.
+    ///
+    /// This is independent from whether the stream is in backward mode or not.
+    #[inline]
+    fn forward_transition(node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if current_transition + 1 < node.len() {
+            Some(current_transition + 1)
+        } else {
+            None
+        }
+    }
+
+    /// See [Stream::forward_transition].
+    #[inline]
+    fn backward_transition(node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if current_transition > 0 && node.len() > 0 {
+            Some(current_transition - 1)
+        } else {
+            None
+        }
+    }
+
+    /// Reverses the stream. Will reset the iterator.
+    fn reverse(&mut self) {
+        self.inp.clear();
+        self.stack.clear();
+        self.has_seeked = false;
+        self.reversed = !self.reversed;
+    }
+
+    /// Checks if an input is out of the current bounds.
+    fn out_of_bounds(&self, inp: &[u8]) -> bool {
+        self.min.subceeded_by(inp) || self.max.exceeded_by(inp)
     }
 }
 

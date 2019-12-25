@@ -467,6 +467,70 @@ test_range! {
     "a", "b", "c", "d", "e", "f"
 }
 
+test_range! {
+    fst_range_20,
+    min: Bound::Included(vec![b'a', b'a', b'a']), max: Bound::Unbounded,
+    imin: 1, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_21,
+    min: Bound::Included(b"aab".to_vec()), max: Bound::Unbounded,
+    imin: 2, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_22,
+    min: Bound::Excluded(b"aab".to_vec()), max: Bound::Unbounded,
+    imin: 2, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_23,
+    min: Bound::Included(b"a".to_vec()), max: Bound::Included(b"a".to_vec()),
+    imin: 0, imax: 1,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_24,
+    min: Bound::Included(b"aca".to_vec()), max: Bound::Included(b"aca".to_vec()),
+    imin: 3, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_25,
+    min: Bound::Included(b"aba".to_vec()), max: Bound::Included(b"aba".to_vec()),
+    imin: 2, imax: 3,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_26,
+    min: Bound::Included(b"aaa".to_vec()), max: Bound::Unbounded,
+    imin: 2, imax: 3,
+    "a", "aa", "aaa"
+}
+
+test_range! {
+    fst_range_27,
+    min: Bound::Included(b"aa".to_vec()), max: Bound::Unbounded,
+    imin: 1, imax: 3,
+    "a", "aa", "aaa"
+}
+
+test_range! {
+    fst_range_28,
+    min: Bound::Included(b"a".to_vec()), max: Bound::Unbounded,
+    imin: 0, imax: 3,
+    "a", "aa", "aaa"
+}
+
+
 #[test]
 fn reverse() {
     let items: Vec<_> =
@@ -479,6 +543,33 @@ fn reverse() {
     assert!(stream.0.reversed);
     let stream = stream.reverse();
     assert!(!stream.0.reversed);
+}
+
+
+#[test]
+fn test_range_ge() {
+    use crate::{Streamer, IntoStreamer};
+    let items: Vec<_> =
+        vec!["a", "aaa", "aba", "aca"].into_iter().enumerate()
+            .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let stream = fst.range().ge("aaa").into_stream();
+    let keys = stream.into_str_keys().unwrap();
+    assert_eq!(&keys[..],
+    &["aaa", "aba", "aca"]);
+}
+
+#[test]
+fn test_range_gt() {
+    use crate::{Streamer, IntoStreamer};
+    let items: Vec<_> =
+        vec!["aaa", "aba", "aca"].into_iter().enumerate()
+            .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let stream = fst.range().gt("aaa").into_stream();
+    let keys = stream.into_str_keys().unwrap();
+    assert_eq!(&keys[..],
+               &["aba", "aca"]);
 }
 
 #[test]
@@ -495,6 +586,22 @@ fn starting_transition() {
     let a = fst.node(root.transition(0).addr);
     assert_eq!(stream.0.starting_transition(&a), None);
 }
+
+#[test]
+fn last_transition() {
+    let items: Vec<_> =
+        vec!["a", "b", "c", "d"].into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let stream = fst.stream();
+    let root = fst.root();
+    assert_eq!(stream.0.last_transition(&root).unwrap(), 3);
+    let stream = stream.reverse();
+    assert_eq!(stream.0.last_transition(&root).unwrap(), 0);
+    let a = fst.node(root.transition(0).addr);
+    assert_eq!(stream.0.last_transition(&a), None);
+}
+
 
 
 #[test]
@@ -560,6 +667,7 @@ fn reverse_traversal_bounds() {
     test_reverse_range(vec!["a", "ab", "abc", "abcd", "abcde", "abd", "abdx"], Bound::Unbounded, Bound::Included(b"abd".to_vec()), 0, 6);
     test_reverse_range(vec!["a", "ab", "abc", "abcd", "abcde", "abe"],  Bound::Unbounded, Bound::Excluded(b"abd".to_vec()), 0, 5);
     test_reverse_range(vec!["", "a"], Bound::Included(vec![]), Bound::Unbounded, 0, 2);
+    test_reverse_range(vec!["a", "aaa", "aba", "aca"], Bound::Included(b"aaa".to_vec()), Bound::Unbounded, 1, 4);
 }
 
 #[test]
