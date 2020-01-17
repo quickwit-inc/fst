@@ -18,7 +18,7 @@ option of specifying a merge strategy for output values.
 
 Most of the rest of the types are streams from set operations.
 */
-use std::cmp;
+use std::{cmp, mem};
 use std::fmt;
 use std::ops::Deref;
 
@@ -67,6 +67,9 @@ const EMPTY_ADDRESS: CompiledAddr = 0;
 ///
 /// This is never the address of a node in a serialized transducer.
 const NONE_ADDRESS: CompiledAddr = 1;
+
+/// Default capacity for the key buffer of a stream.
+const KEY_BUFFER_CAPACITY: usize = 128;
 
 /// FstType is a convention used to indicate the type of the underlying
 /// transducer.
@@ -462,8 +465,8 @@ impl<Data: Deref<Target=[u8]>> Fst<Data> {
     /// `stream` must be a lexicographically ordered sequence of byte strings
     /// with associated values.
     pub fn is_disjoint<'f, I, S>(&self, stream: I) -> bool
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
-                  S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
+        where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
+              S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
         self.op().add(stream).intersection().next().is_none()
     }
 
@@ -473,8 +476,8 @@ impl<Data: Deref<Target=[u8]>> Fst<Data> {
     /// `stream` must be a lexicographically ordered sequence of byte strings
     /// with associated values.
     pub fn is_subset<'f, I, S>(&self, stream: I) -> bool
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
-                  S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
+        where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
+              S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
         let mut op = self.op().add(stream).intersection();
         let mut count = 0;
         while let Some(_) = op.next() {
@@ -489,8 +492,8 @@ impl<Data: Deref<Target=[u8]>> Fst<Data> {
     /// `stream` must be a lexicographically ordered sequence of byte strings
     /// with associated values.
     pub fn is_superset<'f, I, S>(&self, stream: I) -> bool
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
-                  S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
+        where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
+              S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
         let mut op = self.op().add(stream).union();
         let mut count = 0;
         while let Some(_) = op.next() {
@@ -560,6 +563,7 @@ pub struct StreamBuilder<'f, A=AlwaysMatch> {
     aut: A,
     min: Bound,
     max: Bound,
+    backward: bool
 }
 
 impl<'f, A: Automaton> StreamBuilder<'f, A> {
@@ -570,6 +574,7 @@ impl<'f, A: Automaton> StreamBuilder<'f, A> {
             aut,
             min: Bound::Unbounded,
             max: Bound::Unbounded,
+            backward: false,
         }
     }
 
@@ -597,16 +602,16 @@ impl<'f, A: Automaton> StreamBuilder<'f, A> {
         self
     }
 
+    /// Sets the `StreamBuilder` to stream the `(key, value)` backward.
+    pub fn backward(mut self) -> Self {
+        self.backward = true;
+        self
+    }
+
     /// Return this builder and gives the automaton states
     /// along with the results.
     pub fn with_state(self) -> StreamWithStateBuilder<'f, A> {
-        StreamWithStateBuilder {
-            meta: self.meta,
-            data: self.data,
-            aut: self.aut,
-            min: self.min,
-            max: self.max,
-        }
+        StreamWithStateBuilder(self)
     }
 }
 
@@ -615,7 +620,7 @@ impl<'a, 'f, A: Automaton> IntoStreamer<'a> for StreamBuilder<'f, A> {
     type Into = Stream<'f, A>;
 
     fn into_stream(self) -> Stream<'f, A> {
-        Stream::new(self.meta, self.data, self.aut, self.min, self.max)
+        Stream::new(self.meta, self.data, self.aut, self.min, self.max, self.backward)
     }
 }
 
@@ -632,13 +637,7 @@ impl<'a, 'f, A: Automaton> IntoStreamer<'a> for StreamBuilder<'f, A> {
 /// the stream. By default, no filtering is done.
 ///
 /// The `'f` lifetime parameter refers to the lifetime of the underlying fst.
-pub struct StreamWithStateBuilder<'f, A=AlwaysMatch> {
-    meta: &'f FstMeta,
-    data: &'f [u8],
-    aut: A,
-    min: Bound,
-    max: Bound,
-}
+pub struct StreamWithStateBuilder<'f, A=AlwaysMatch>(StreamBuilder<'f, A>);
 
 impl<'a, 'f, A: 'a + Automaton> IntoStreamer<'a> for StreamWithStateBuilder<'f, A>
     where A::State: Clone
@@ -647,11 +646,11 @@ impl<'a, 'f, A: 'a + Automaton> IntoStreamer<'a> for StreamWithStateBuilder<'f, 
     type Into = StreamWithState<'f, A>;
 
     fn into_stream(self) -> StreamWithState<'f, A> {
-        StreamWithState::new(self.meta, self.data, self.aut, self.min, self.max)
+        StreamWithState::new(self.0.meta, self.0.data, self.0.aut, self.0.min, self.0.max, self.0.backward)
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Bound {
     Included(Vec<u8>),
     Excluded(Vec<u8>),
@@ -663,6 +662,14 @@ impl Bound {
         match *self {
             Bound::Included(ref v) => inp > v,
             Bound::Excluded(ref v) => inp >= v,
+            Bound::Unbounded => false,
+        }
+    }
+
+    fn subceeded_by(&self, inp: &[u8]) -> bool {
+        match *self {
+            Bound::Included(ref v) => inp < v,
+            Bound::Excluded(ref v) => inp <= v,
             Bound::Unbounded => false,
         }
     }
@@ -683,11 +690,12 @@ impl Bound {
     }
 }
 
+/// Stream of `key, value` not exposing the state of the automaton.
 pub struct Stream<'f, A=AlwaysMatch>(StreamWithState<'f, A>) where A: Automaton;
 
 impl<'f, A: Automaton> Stream<'f, A> {
-    fn new(meta: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound) -> Self {
-        Stream(StreamWithState::new(meta, data, aut, min, max))
+    fn new(meta: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound, backward: bool) -> Self {
+        Self(StreamWithState::new(meta, data, aut, min, max, backward))
     }
 
     /// Convert this stream into a vector of byte strings and outputs.
@@ -767,14 +775,18 @@ impl<'f, 'a, A: Automaton> Streamer<'a> for Stream<'f, A> {
 /// the stream. By default, no filtering is done.
 ///
 /// The `'f` lifetime parameter refers to the lifetime of the underlying fst.
+#[derive(Clone)]
 pub struct StreamWithState<'f, A=AlwaysMatch> where A: Automaton {
     fst: &'f FstMeta,
     data: &'f [u8],
     aut: A,
-    inp: Vec<u8>,
+    inp: Buffer,
     empty_output: Option<Output>,
     stack: Vec<StreamState<'f, A::State>>,
     end_at: Bound,
+    min: Bound,
+    max: Bound,
+    reversed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -783,22 +795,35 @@ struct StreamState<'f, S> {
     trans: usize,
     out: Output,
     aut_state: S,
+    done: bool,  // ('done' = true) means that there are no unexplored transitions in the current state. 
+    // 'trans' value should be ignored when done is true.
 }
 
 impl<'f, A: Automaton> StreamWithState<'f, A> {
 
-    fn new(fst: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound) -> Self {
-        let mut rdr = StreamWithState {
+    fn new(fst: &'f FstMeta, data: &'f [u8], aut: A, min: Bound, max: Bound, backward: bool) -> Self {
+        let min_2 = min.clone();
+        let max_2 = max.clone();
+        let end_at: Bound =
+            if !backward {
+                max.clone()
+            } else {
+                min.clone()
+            };
+        let mut stream = StreamWithState {
             fst,
             data,
             aut,
-            inp: Vec::with_capacity(16),
+            inp: Buffer::new(),
             empty_output: None,
             stack: vec![],
-            end_at: max,
+            end_at,
+            min: min_2,
+            max: max_2,
+            reversed: backward,
         };
-        rdr.seek_min(min);
-        rdr
+        stream.seek(&min, &max);
+        stream
     }
 
     /// Seeks the underlying stream such that the next key to be read is the
@@ -808,26 +833,30 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// This theoretically should be straight-forward, but we need to make
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
-    fn seek_min(&mut self, min: Bound) {
-        if min.is_empty() {
-            if min.is_inclusive() {
-                self.empty_output = self.fst.empty_final_output(self.data);
-            }
+    fn seek(&mut self, min: &Bound, max: &Bound) {
+        let start_bound = if self.reversed { &max } else { &min };
+        if min.is_empty() && min.is_inclusive() {
+            self.empty_output = self.resolve_empty_output(min, max);
+        }
+        if start_bound.is_empty() {
             self.stack.clear();
+            let node = self.fst.root(self.data);
+            let transition = self.starting_transition(&node);
             self.stack = vec![StreamState {
-                node:  self.fst.root(self.data),
-                trans: 0,
+                node,
+                trans: transition.unwrap_or_default(),
                 out: Output::zero(),
                 aut_state: self.aut.start(),
+                done: transition.is_none(),
             }];
             return;
         }
-        let (key, inclusive) = match min {
-            Bound::Excluded(ref min) => {
-                (min, false)
+        let (key, inclusive) = match start_bound {
+            Bound::Excluded(ref start_bound) => {
+                (start_bound, false)
             }
-            Bound::Included(ref min) => {
-                (min, true)
+            Bound::Included(ref start_bound) => {
+                (start_bound, true)
             }
             Bound::Unbounded => unreachable!(),
         };
@@ -847,11 +876,13 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     let prev_state = aut_state;
                     aut_state = self.aut.accept(&prev_state, b);
                     self.inp.push(b);
+                    let transition = self.next_transition(&node, i);
                     self.stack.push(StreamState {
                         node,
-                        trans: i+1,
+                        trans: transition.unwrap_or_default(),
                         out,
                         aut_state: prev_state,
+                        done: transition.is_none(),
                     });
                     out = out.cat(t.out);
                     node = self.fst.node(t.addr, self.data);
@@ -862,52 +893,62 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     // Since this is a minimum bound, we need to find the
                     // first transition in this node that proceeds the current
                     // input byte.
-                    self.stack.push(StreamState {
-                        node,
-                        trans: node.transitions()
-                            .position(|t| t.inp > b)
-                            .unwrap_or(node.len()),
-                        out,
-                        aut_state,
-                    });
+                    let trans = self.transition_within_bound(&node, b);
+                    self.stack.push(StreamState{node, trans: trans.unwrap_or_default(), out, aut_state, done: trans.is_none()});
                     return;
                 }
             }
         }
-        if !self.stack.is_empty() {
-            let last = self.stack.len() - 1;
-            if inclusive {
-                self.stack[last].trans -= 1;
-                self.inp.pop();
-            } else {
-                let node = self.stack[last].node;
-                let trans = self.stack[last].trans;
-                self.stack.push(StreamState {
-                    node: self.fst.node(node.transition(trans - 1).addr, self.data),
-                    trans: 0,
-                    out,
-                    aut_state,
-                });
-            }
+        if self.stack.is_empty() {
+            return;
+        }
+        let last = self.stack.len() - 1;
+        let state = &self.stack[last];
+        let transition = if !state.done {
+            self.previous_transition(&state.node, state.trans)
+        } else {
+            self.last_transition(&state.node)
+        };
+        if inclusive {
+            self.stack[last].trans = transition.unwrap_or_default();
+            self.stack[last].done = transition.is_none();
+            self.inp.pop();
+        } else {
+            let next_node = self.fst.node(state.node.transition(transition.unwrap_or_default()).addr, self.data);
+            let starting_transition = self.starting_transition(&next_node);
+            self.stack.push(StreamState {
+                node: next_node,
+                trans: starting_transition.unwrap_or_default(),
+                out,
+                aut_state,
+                done: starting_transition.is_none(),
+            });
         }
     }
 
     #[inline]
     fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)> where F: Fn(&A::State) -> T {
-        if let Some(out) = self.empty_output.take() {
-            if self.end_at.exceeded_by(&[]) {
-                self.stack.clear();
-                return None;
-            }
-            let start = self.aut.start();
-            if self.aut.is_match(&start) {
-                return Some((&[], out, transform(&start)));
+        if !self.reversed {
+            // Inorder empty output (will be first).
+            if let Some(out) = self.empty_output.take() {
+                return Some((&[], out, transform(&self.aut.start())));
             }
         }
         while let Some(state) = self.stack.pop() {
-            if state.trans >= state.node.len() || !self.aut.can_match(&state.aut_state) {
+            if state.done || !self.aut.can_match(&state.aut_state) {
                 if state.node.addr() != self.fst.root_addr {
-                    self.inp.pop().unwrap();
+                    // Reversed return next logic.
+                    // If the stack is empty the value should not be returned. 
+                    if self.reversed {
+                        if !self.stack.is_empty() && state.node.is_final() {
+                            let out_of_bounds =
+                                self.min.subceeded_by(&self.inp) || self.max.exceeded_by(&self.inp);
+                            if !out_of_bounds && self.aut.is_match(&state.aut_state) {
+                                return Some((&self.inp.pop(), state.out, transform(&state.aut_state)))
+                            }
+                        }
+                    }
+                    self.inp.pop();
                 }
                 continue;
             }
@@ -917,27 +958,136 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             let is_match = self.aut.is_match(&next_state);
             let next_node = self.fst.node(trans.addr, self.data);
             self.inp.push(trans.inp);
+            let current_transition = self.next_transition(&state.node, state.trans);
             self.stack.push(StreamState {
-                trans: state.trans + 1, .. state
+                trans: current_transition.unwrap_or_default(), done: current_transition.is_none(), .. state
             });
             let ns = transform(&next_state);
+            let next_transition = self.starting_transition(&next_node);
             self.stack.push(StreamState {
                 node: next_node,
-                trans: 0,
+                trans: next_transition.unwrap_or_default(),
                 out,
                 aut_state: next_state,
+                done: next_transition.is_none(),
             });
-            if self.end_at.exceeded_by(&self.inp) {
-                // We are done, forever.
-                self.stack.clear();
-                return None;
-            }
-            if next_node.is_final() && is_match {
-                let out = out.cat(next_node.final_output());
-                return Some((&self.inp, out, ns));
+            // Inorder return next logic.
+            if !self.reversed {
+                if self.end_at.exceeded_by(&self.inp) {
+                    // We are done, forever.
+                    self.stack.clear();
+                    return None;
+                } else if !self.reversed && next_node.is_final() && is_match {
+                    return Some((&self.inp, out.cat(next_node.final_output()), ns));
+                }
             }
         }
-        None
+        // If we are streaming backward, we still need to return the empty output, if empty is
+        // part of our fst, matches the range and the automaton
+        self.empty_output.take()
+            .map(|out| (&[][..], out, transform(&self.aut.start())))
+    }
+
+    // The first transition that is in a bound for a given node.
+    #[inline]
+    fn transition_within_bound(&self, node: &Node<'f>, bound: u8) -> Option<usize> {
+        let mut trans;
+        if let Some(t) = self.starting_transition(&node) {
+            trans = t;
+        } else {
+            return None
+        }
+        loop {
+            let transition = node.transition(trans);
+            if (!self.reversed && transition.inp > bound) || (self.reversed && transition.inp < bound) {
+                return Some(trans);
+            } else if let Some(t) = self.next_transition(&node, trans) {
+                trans = t;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// Resolves value of the empty output. Will be none if the empty output should not be returned.
+    #[inline]
+    fn resolve_empty_output(&mut self, min: &Bound, max: &Bound) -> Option<Output> {
+        if min.subceeded_by(&[]) || max.exceeded_by(&[]) {
+            return None;
+        }
+        let start = self.aut.start();
+        if !self.aut.is_match(&start) {
+            return None;
+        }
+        self.fst.empty_final_output(self.data)
+    }
+
+
+    #[inline]
+    fn starting_transition(&self, node: &Node<'f>) -> Option<usize> {
+        if node.len() == 0 {
+            None
+        } else if !self.reversed {
+            Some(0)
+        } else {
+            Some(node.len() - 1)
+        }
+    }
+
+    #[inline]
+    fn last_transition(&self, node: &Node<'f>) -> Option<usize> {
+        if node.len() == 0 {
+            None
+        } else if self.reversed {
+            Some(0)
+        } else {
+            Some(node.len() - 1)
+        }
+    }
+
+    /// Returns the next transition.
+    ///
+    /// The concept of `next` transition is dependent on whether the stream is in reverse mode or
+    /// not. If all the transitions of this node have been emitted, this method returns None.
+    #[inline]
+    fn next_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if self.reversed {
+            Self::backward_transition(node, current_transition)
+        } else {
+            Self::forward_transition(node, current_transition)
+        }
+    }
+
+    /// See `StreamWithState::next_transition`.
+    #[inline]
+    fn previous_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if self.reversed {
+            Self::forward_transition(node, current_transition)
+        } else {
+            Self::backward_transition(node, current_transition)
+        }
+    }
+
+    /// Returns the next logical transition.
+    ///
+    /// This is independent from whether the stream is in backward mode or not.
+    #[inline]
+    fn forward_transition(node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if current_transition + 1 < node.len() {
+            Some(current_transition + 1)
+        } else {
+            None
+        }
+    }
+
+    /// See [Stream::forward_transition].
+    #[inline]
+    fn backward_transition(node: &Node<'f>, current_transition: usize) -> Option<usize> {
+        if current_transition > 0 && node.len() > 0 {
+            Some(current_transition - 1)
+        } else {
+            None
+        }
     }
 }
 
@@ -966,6 +1116,58 @@ impl<'f, 'a, A: 'a + Automaton> Streamer<'a> for StreamWithState<'f, A>
 /// crate may make outputs generic on this algebra.
 #[derive(Copy, Clone, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Output(u64);
+
+#[derive(Clone)]
+struct Buffer {
+    buf: Box<[u8]>,
+    len: usize
+}
+
+impl Buffer {
+    fn new() -> Self {
+        Buffer {
+            buf: vec![0u8; KEY_BUFFER_CAPACITY].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    fn double_cap(&mut self) {
+        let old_cap = self.capacity();
+        let new_cap = old_cap * 2;
+        let mut new_buf = vec![0u8; new_cap].into_boxed_slice();
+        new_buf[..old_cap].copy_from_slice(&self.buf[..old_cap]);
+        mem::replace(&mut self.buf, new_buf);
+    }
+
+    fn push(&mut self, b: u8) {
+        if self.capacity() <= self.len {
+            self.double_cap();
+        }
+        self.buf[self.len] = b;
+        self.len += 1;
+    }
+
+    // Pops one byte and returns the entire chain before the byte was popped.
+    fn pop(&mut self) -> &[u8] {
+        let len = self.len;
+        self.len = len - 1;
+        &self.buf[..len]
+    }
+}
+
+
+
+impl Deref for Buffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
 
 impl Output {
     /// Create a new output from a `u64`.
@@ -1010,7 +1212,7 @@ impl Output {
     #[inline]
     pub fn sub(self, o: Output) -> Output {
         Output(self.0.checked_sub(o.0)
-                     .expect("BUG: underflow subtraction not allowed"))
+            .expect("BUG: underflow subtraction not allowed"))
     }
 }
 

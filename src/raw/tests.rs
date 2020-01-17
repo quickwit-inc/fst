@@ -1,10 +1,24 @@
+use inner_automaton::Automaton;
 use automaton::AlwaysMatch;
 use error::Error;
-use raw::{self, VERSION, Builder, Bound, Fst, Stream, Output};
+use raw::{self, VERSION, Buffer, Builder, Bound, Fst, Stream, Output};
 use stream::Streamer;
 use std::ops::Deref;
+use ::{IntoStreamer, Regex};
 
 const TEXT: &'static str = include_str!("./../../data/words-100000");
+
+#[test]
+fn test_buffer() {
+    let mut buffer = Buffer::new();
+    let v: Vec<u8> = (0..10_000).map(|val| (val % 256) as u8).collect();
+    for b in v.iter().cloned() {
+        buffer.push(b);
+    }
+    for len in (1..10_001).rev() {
+        assert_eq!(&v[..len], buffer.pop());
+    }
+}
 
 pub fn fst_set<I, S>(ss: I) -> Fst
         where I: IntoIterator<Item=S>, S: AsRef<[u8]> {
@@ -242,12 +256,22 @@ macro_rules! test_range {
                 items.into_iter().enumerate()
                      .map(|(i, k)| (k, i as u64)).collect();
             let fst: Fst = fst_map(items.clone()).into();
-            let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max);
-            for i in $imin..$imax {
-                assert_eq!(rdr.next().unwrap(),
-                           (items[i].0.as_bytes(), Output::new(items[i].1)));
+            {
+                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max, false);
+                for i in $imin..$imax {
+                    assert_eq!(rdr.next().unwrap(),
+                               (items[i].0.as_bytes(), Output::new(items[i].1)));
+                }
+                assert_eq!(rdr.next(), None);
             }
-            assert_eq!(rdr.next(), None);
+            {
+                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max, true);
+                for i in ($imin..$imax).rev() {
+                    assert_eq!(rdr.next().unwrap(),
+                               (items[i].0.as_bytes(), Output::new(items[i].1)));
+                }
+                assert_eq!(rdr.next(), None);
+            }
         }
     }
 }
@@ -461,6 +485,295 @@ test_range! {
     "a", "b", "c", "d", "e", "f"
 }
 
+test_range! {
+    fst_range_20,
+    min: Bound::Included(b"aaa".to_vec()), max: Bound::Unbounded,
+    imin: 1, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_21,
+    min: Bound::Included(b"aab".to_vec()), max: Bound::Unbounded,
+    imin: 2, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_22,
+    min: Bound::Excluded(b"aab".to_vec()), max: Bound::Unbounded,
+    imin: 2, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_23,
+    min: Bound::Included(b"a".to_vec()), max: Bound::Included(b"a".to_vec()),
+    imin: 0, imax: 1,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_24,
+    min: Bound::Included(b"aca".to_vec()), max: Bound::Included(b"aca".to_vec()),
+    imin: 3, imax: 4,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_25,
+    min: Bound::Included(b"aba".to_vec()), max: Bound::Included(b"aba".to_vec()),
+    imin: 2, imax: 3,
+    "a", "aaa", "aba", "aca"
+}
+
+test_range! {
+    fst_range_26,
+    min: Bound::Included(b"aaa".to_vec()), max: Bound::Unbounded,
+    imin: 2, imax: 3,
+    "a", "aa", "aaa"
+}
+
+test_range! {
+    fst_range_27,
+    min: Bound::Included(b"aa".to_vec()), max: Bound::Unbounded,
+    imin: 1, imax: 3,
+    "a", "aa", "aaa"
+}
+
+test_range! {
+    fst_range_28,
+    min: Bound::Included(b"a".to_vec()), max: Bound::Unbounded,
+    imin: 0, imax: 3,
+    "a", "aa", "aaa"
+}
+
+test_range! {
+    fst_range_29,
+    min: Bound::Included(b"ka".to_vec()), max: Bound::Unbounded,
+    imin: 3, imax: 2,
+    "a", "k"
+}
+
+
+#[test]
+fn test_range_ge() {
+    use crate::IntoStreamer;
+    let items: Vec<_> =
+        vec!["a", "aaa", "aba", "aca"].into_iter().enumerate()
+            .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let stream = fst.range().ge("aaa").into_stream();
+    let keys = stream.into_str_keys().unwrap();
+    assert_eq!(&keys[..],
+    &["aaa", "aba", "aca"]);
+}
+
+#[test]
+fn test_range_gt() {
+    use crate::IntoStreamer;
+    let items: Vec<_> =
+        vec!["aaa", "aba", "aca"].into_iter().enumerate()
+            .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let stream = fst.range().gt("aaa").into_stream();
+    let keys = stream.into_str_keys().unwrap();
+    assert_eq!(&keys[..],
+               &["aba", "aca"]);
+}
+
+#[test]
+fn starting_transition() {
+    let items: Vec<_> =
+        vec!["a", "b", "c", "d"].into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let root = fst.root();
+    {
+        let stream = fst.stream();
+        assert_eq!(stream.0.starting_transition(&root).unwrap(), 0);
+    }
+    {
+        let stream = fst.range().backward().into_stream();
+        assert_eq!(stream.0.starting_transition(&root).unwrap(), 3);
+        let a = fst.node(root.transition(0).addr);
+        assert_eq!(stream.0.starting_transition(&a), None);
+    }
+}
+
+#[test]
+fn test_return_node_on_reverse_only_if_match() {
+    let items: Vec<_> =
+        vec!["a", "ab"].into_iter().enumerate()
+            .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let automaton = Regex::new("ab").unwrap();
+    let mut stream = fst.search(automaton).backward().into_stream();
+    assert_eq!(stream.next(), Some((&b"ab"[..], Output::new(1u64))));
+    assert_eq!(stream.next(), None);
+}
+
+#[test]
+fn last_transition() {
+    let items: Vec<_> =
+        vec!["a", "b", "c", "d"].into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let root = fst.root();
+    {
+        let stream = fst.stream();
+        assert_eq!(stream.0.last_transition(&root).unwrap(), 3);
+    }
+    {
+        let stream = fst.range().backward().into_stream();
+        assert_eq!(stream.0.last_transition(&root).unwrap(), 0);
+        let a = fst.node(root.transition(0).addr);
+        assert_eq!(stream.0.last_transition(&a), None);
+
+    }
+}
+
+
+
+#[test]
+fn next_transition() {
+    let items: Vec<_> =
+        vec!["a", "ab", "ac", "ad"].into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let a = fst.node(fst.root().transition(0).addr);
+    {
+        let stream = fst.stream();
+        assert_eq!(a.len(), 3);
+        assert_eq!(stream.0.next_transition(&a, 0).unwrap(), 1);
+        assert_eq!(stream.0.next_transition(&a, 1).unwrap(), 2);
+        assert_eq!(stream.0.next_transition(&a, 2), None);
+        assert_eq!(stream.0.previous_transition(&a, 0), None);
+        assert_eq!(stream.0.previous_transition(&a, 1).unwrap(), 0);
+        assert_eq!(stream.0.previous_transition(&a, 2).unwrap(), 1);
+    }
+    {
+        let stream = fst.range().backward().into_stream();
+        assert_eq!(stream.0.next_transition(&a, 0), None);
+        assert_eq!(stream.0.next_transition(&a, 1).unwrap(), 0);
+        assert_eq!(stream.0.next_transition(&a, 2).unwrap(), 1);
+        assert_eq!(stream.0.previous_transition(&a, 0).unwrap(), 1);
+        assert_eq!(stream.0.previous_transition(&a, 1).unwrap(), 2);
+        assert_eq!(stream.0.previous_transition(&a, 2), None);
+    }
+}
+
+#[test]
+fn test_transition_within_bound() {
+    let items: Vec<_> =
+        vec!["a", "ab", "ac", "ad"].into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    let stream = fst.stream();
+    let a = fst.node(fst.root().transition(0).addr);
+    assert_eq!(stream.0.transition_within_bound(&a, 'z' as u8), None);
+    assert_eq!(stream.0.transition_within_bound(&a, 'd' as u8), None);
+    assert_eq!(stream.0.transition_within_bound(&a, 'c' as u8), Some(2));
+    assert_eq!(stream.0.transition_within_bound(&a, 'b' as u8), Some(1));
+    assert_eq!(stream.0.transition_within_bound(&a, 'a' as u8), Some(0));
+}
+
+fn automaton_match<A: Automaton>(aut: &A, inp: &[u8]) -> bool {
+    let mut state = aut.start();
+    for &b in inp {
+        if !aut.can_match(&state) {
+            return false;
+        }
+        state = aut.accept(&state, b);
+    }
+    aut.is_match(&state)
+}
+
+fn contains(min: &Bound, max: &Bound, bytes: &[u8]) -> bool {
+    (match min {
+        Bound::Included(ref start) => start.as_slice() <= bytes,
+        Bound::Excluded(ref start) => start.as_slice() < bytes,
+        Bound::Unbounded => true,
+    }) && (match max {
+        Bound::Included(ref end) => bytes <= end.as_slice(),
+        Bound::Excluded(ref end) => bytes < end.as_slice(),
+        Bound::Unbounded => true,
+    })
+}
+
+fn  test_range_with_aut_fn<A>(input: Vec<&str>, aut: A,  min: Bound, max: Bound) where A: Automaton {
+    let items: Vec<_> = input.into_iter().enumerate()
+             .map(|(i, k)| (k, i as u64)).collect();
+    let expected_items: Vec<(&str, u64)> =
+        items
+            .iter()
+            .filter(|&&(k,_v )| {
+                contains(&min, &max, k.as_bytes()) && automaton_match(&aut, k.as_bytes())
+            })
+            .cloned()
+            .collect();
+
+
+    let fst: Fst = fst_map(items.clone()).into();
+    { // test forward
+        let mut stream = Stream::new(&fst.meta, fst.data.deref(), &aut, min.clone(), max.clone(), false);
+        for &(exp_k, exp_v) in &expected_items {
+            if let Some((k, v)) = stream.next() {
+                assert_eq!(k, exp_k.as_bytes());
+                assert_eq!(v, Output::new(exp_v));
+            } else {
+                assert!(false);
+            }
+        }
+        assert!(stream.next().is_none());
+    }
+    { // test backward
+        let mut stream = Stream::new(&fst.meta, fst.data.deref(), &aut, min, max, true);
+        for &(exp_k, exp_v) in expected_items.iter().rev() {
+            if let Some((k, v)) = stream.next() {
+                assert_eq!(k, exp_k.as_bytes());
+                assert_eq!(v, Output::new(exp_v));
+            } else {
+                assert!(false);
+            }
+        }
+        assert!(stream.next().is_none());
+    }
+
+}
+
+#[test]
+fn test_simple() {
+    let items: Vec<_> = vec![("", 0u64)];
+    let fst: Fst = fst_map(items.clone()).into();
+    let a = Regex::new("").unwrap();
+    let mut stream = Stream::new(&fst.meta, fst.data.deref(), &a, Bound::Unbounded, Bound::Included(b"a".to_vec()), true);
+    assert_eq!(stream.next(), Some((&b""[..], Output::new(0u64))));
+    assert!(stream.next().is_none());
+}
+
+#[test] 
+fn reverse_traversal() {
+    test_range_with_aut_fn(vec!["a"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "b"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "b", "c"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+    test_range_with_aut_fn(vec!["aa", "ab", "ac"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "ab"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "ab", "abc", "abcd", "abcde", "abd", "abdx"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "ab", "abc", "abcd", "abcde", "abe"], AlwaysMatch, Bound::Unbounded, Bound::Unbounded);
+}
+
+#[test] 
+fn reverse_traversal_bounds() {
+    test_range_with_aut_fn(vec!["a", "ab", "abc", "abcd", "abcde", "xyz"], AlwaysMatch,Bound::Included(b"abd".to_vec()), Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "b", "y", "z"], AlwaysMatch,Bound::Included(vec![b'a']), Bound::Included(vec![b'z']));
+    test_range_with_aut_fn(vec!["a", "ab", "abc", "abcd", "abcde", "abd"], AlwaysMatch,Bound::Unbounded, Bound::Included(b"abd".to_vec()));
+    test_range_with_aut_fn(vec!["a", "ab", "abc", "abcd", "abcde", "abd", "abdx"],AlwaysMatch, Bound::Unbounded, Bound::Included(b"abd".to_vec()));
+    test_range_with_aut_fn(vec!["a", "ab", "abc", "abcd", "abcde", "abe"],AlwaysMatch,  Bound::Unbounded, Bound::Excluded(b"abd".to_vec()));
+    test_range_with_aut_fn(vec!["", "a"], AlwaysMatch,Bound::Included(vec![]), Bound::Unbounded);
+    test_range_with_aut_fn(vec!["a", "aaa", "aba", "aca"], AlwaysMatch,Bound::Included(b"aaa".to_vec()), Bound::Unbounded);
+}
+
 #[test]
 fn bytes_written() {
     let mut bfst1 = Builder::memory();
@@ -471,4 +784,153 @@ fn bytes_written() {
     let fst1_len = bytes.len() as u64;
     let footer_size = 24;
     assert_eq!(counted_len + footer_size, fst1_len);
+}
+
+macro_rules! test_range_with_aut {
+    (
+        $name:ident,
+        min: $min:expr,
+        max: $max:expr,
+        imin: $imin:expr,
+        imax: $imax:expr,
+        aut: $aut:expr,
+        input: $input:expr,
+        output: $output:expr,
+    ) => {
+        #[test]
+        fn $name() {
+            let items: Vec<&'static str> = $input;
+            let items: Vec<_> =
+                items.into_iter().enumerate()
+                     .map(|(i, k)| (k, i as u64)).collect();
+            let output: Vec<&'static str> = $output;
+            let output: Vec<_> =
+                output.into_iter()
+                    .map(|k| (k, items.iter().position(|&t| t.0 == k).unwrap() as u64)).collect();
+            let fst: Fst = fst_map(items.clone()).into();
+            {
+                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), $aut, $min, $max, false);
+                for i in $imin..$imax {
+                    assert_eq!(rdr.next().unwrap(),
+                               (output[i].0.as_bytes(), Output::new(output[i].1)));
+                }
+                assert_eq!(rdr.next(), None);
+            }
+            {
+                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), $aut, $min, $max, true);
+                for i in ($imin..$imax).rev() {
+                    assert_eq!(rdr.next().unwrap(),
+                               (output[i].0.as_bytes(), Output::new(output[i].1)));
+                }
+                assert_eq!(rdr.next(), None);
+            }
+        }
+    }
+}
+
+
+
+test_range_with_aut! {
+    fst_range_aut_1,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 3,
+    aut: Regex::new("a*").unwrap(),
+    input: vec!["a", "aa", "aaa"],
+    output: vec!["a", "aa", "aaa"],
+}
+
+test_range_with_aut! {
+    fst_range_aut_2,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 2,
+    aut: Regex::new("a*").unwrap(),
+    input: vec!["b", "aa", "aaa"],
+    output: vec!["aa", "aaa"],
+}
+
+test_range_with_aut! {
+    fst_range_aut_3,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 0,
+    aut: Regex::new("").unwrap(),
+    input: vec!["b", "aa", "aaa"],
+    output: vec![],
+}
+
+test_range_with_aut! {
+    fst_range_aut_4,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 1,
+    aut: Regex::new("b").unwrap(),
+    input: vec!["b", "aa", "aaa"],
+    output: vec!["b"],
+}
+
+test_range_with_aut! {
+    fst_range_aut_5,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 0,
+    aut: Regex::new("c").unwrap(),
+    input: vec!["b", "aa", "aaa"],
+    output: vec![],
+}
+
+test_range_with_aut! {
+    fst_range_aut_6,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 0,
+    aut: Regex::new("a").unwrap(),
+    input: vec![],
+    output: vec![],
+}
+
+test_range_with_aut! {
+    fst_range_aut_7,
+    min: Bound::Excluded(b"a".to_vec()), max: Bound::Excluded(b"ca".to_vec()),
+    imin: 0, imax: 1,
+    aut: Regex::new("c").unwrap(),
+    input: vec!["a", "ba", "bb", "c"],
+    output: vec!["c"],
+}
+
+
+use proptest::prelude::*;
+
+const REGEX_STRING: &'static str = "[a-c\\.]{0,4}";
+
+prop_compose! {
+    fn in_bound()(
+        bound in "[a-c]*"
+    ) -> Bound {
+        Bound::Included(bound.as_bytes().to_vec())
+    }
+}
+
+prop_compose! {
+    fn ex_bound()(
+        bound in "[a-c]*"
+    ) -> Bound {
+        Bound::Excluded(bound.as_bytes().to_vec())
+    }
+}
+
+fn bound_strategy() -> BoxedStrategy<Bound> {
+    prop_oneof![
+        Just(Bound::Unbounded),
+        in_bound(),
+        ex_bound(),
+    ].boxed()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+    #[test]
+    fn proptest_traversal(set in prop::collection::hash_set("[a-c]{0,3}", 0..39),
+                          r in REGEX_STRING,
+                          min in bound_strategy(),
+                          max in bound_strategy()) {
+        let mut vec: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
+        vec.sort();
+        test_range_with_aut_fn(vec.clone(), Regex::new(&r).unwrap(), min, max);
+    }
 }
