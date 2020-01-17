@@ -38,7 +38,7 @@ impl Registry {
         }
     }
 
-    pub fn entry<'a>(&'a mut self, bnode: &BuilderNode) -> RegistryEntry<'a> {
+    pub fn entry(&mut self, bnode: &BuilderNode) -> RegistryEntry {
         match self.table.entry(bnode.clone()) {
             Entry::Occupied(v) => RegistryEntry::Found(v.get().0),
             Entry::Vacant(v) => RegistryEntry::NotFound(v.insert(RegistryCell(0))),
