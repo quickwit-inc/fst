@@ -610,7 +610,7 @@ impl<'f, A: Automaton> StreamBuilder<'f, A> {
     }
 
     /// Sets the `StreamBuilder` to stream the `(key, value)` backward.
-    pub fn backward(mut self) -> Self {
+    pub fn backwards(mut self) -> Self {
         self.backward = true;
         self
     }

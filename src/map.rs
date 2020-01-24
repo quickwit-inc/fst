@@ -666,6 +666,11 @@ impl<'m, A: Automaton> StreamBuilder<'m, A> {
         StreamBuilder(self.0.lt(bound))
     }
 
+    /// Make it iterate backwards.
+    pub fn backwards<T: AsRef<[u8]>>(self) -> Self {
+        StreamBuilder(self.0.backwards())
+    }
+
     /// Return this builder and gives the automaton states
     /// along with the results.
     pub fn with_state(self) -> StreamWithStateBuilder<'m, A> {
