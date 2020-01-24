@@ -667,7 +667,7 @@ impl<'m, A: Automaton> StreamBuilder<'m, A> {
     }
 
     /// Make it iterate backwards.
-    pub fn backwards<T: AsRef<[u8]>>(self) -> Self {
+    pub fn backwards(self) -> Self {
         StreamBuilder(self.0.backwards())
     }
 
