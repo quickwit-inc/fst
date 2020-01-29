@@ -614,7 +614,7 @@ fn starting_transition() {
         assert_eq!(stream.0.starting_transition(&root).unwrap(), 0);
     }
     {
-        let stream = fst.range().backwards().into_stream();
+        let stream = fst.range().backward().into_stream();
         assert_eq!(stream.0.starting_transition(&root).unwrap(), 3);
         let a = fst.node(root.transition(0).addr);
         assert_eq!(stream.0.starting_transition(&a), None);
@@ -630,7 +630,7 @@ fn test_return_node_on_reverse_only_if_match() {
         .collect();
     let fst: Fst = fst_map(items.clone()).into();
     let automaton = Regex::new("ab").unwrap();
-    let mut stream = fst.search(automaton).backwards().into_stream();
+    let mut stream = fst.search(automaton).backward().into_stream();
     assert_eq!(stream.next(), Some((&b"ab"[..], Output::new(1u64))));
     assert_eq!(stream.next(), None);
 }
@@ -649,7 +649,7 @@ fn last_transition() {
         assert_eq!(stream.0.last_transition(&root).unwrap(), 3);
     }
     {
-        let stream = fst.range().backwards().into_stream();
+        let stream = fst.range().backward().into_stream();
         assert_eq!(stream.0.last_transition(&root).unwrap(), 0);
         let a = fst.node(root.transition(0).addr);
         assert_eq!(stream.0.last_transition(&a), None);
@@ -676,7 +676,7 @@ fn next_transition() {
         assert_eq!(stream.0.previous_transition(&a, 2).unwrap(), 1);
     }
     {
-        let stream = fst.range().backwards().into_stream();
+        let stream = fst.range().backward().into_stream();
         assert_eq!(stream.0.next_transition(&a, 0), None);
         assert_eq!(stream.0.next_transition(&a, 1).unwrap(), 0);
         assert_eq!(stream.0.next_transition(&a, 2).unwrap(), 1);
