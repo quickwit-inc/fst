@@ -666,6 +666,11 @@ impl<'m, A: Automaton> StreamBuilder<'m, A> {
         StreamBuilder(self.0.lt(bound))
     }
 
+    /// Make it iterate backwards.
+    pub fn backward(self) -> Self {
+        StreamBuilder(self.0.backward())
+    }
+
     /// Return this builder and gives the automaton states
     /// along with the results.
     pub fn with_state(self) -> StreamWithStateBuilder<'m, A> {
