@@ -5,10 +5,10 @@ use std::ops::Range;
 
 use byteorder::WriteBytesExt;
 
-use raw::{EMPTY_ADDRESS, CompiledAddr, Output, Transition, u64_to_usize};
-use raw::build::BuilderNode;
-use raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
-use raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
+use crate::raw::build::BuilderNode;
+use crate::raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
+use crate::raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
+use crate::raw::{u64_to_usize, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
 
 /// The threshold (in number of transitions) at which an index is created for
 /// a node's transitions. This speeds up lookup time at the expense of FST
@@ -59,25 +59,23 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: &[u8]) -> Node {
     use self::State::*;
     let state = State::new(data, addr);
     match state {
-        EmptyFinal => {
-            Node {
-                data: &[],
-                version: version,
-                state: State::EmptyFinal,
-                start: EMPTY_ADDRESS,
-                end: EMPTY_ADDRESS,
-                is_final: true,
-                ntrans: 0,
-                sizes: PackSizes::new(),
-                final_output: Output::zero(),
-            }
-        }
+        EmptyFinal => Node {
+            data: &[],
+            version,
+            state: State::EmptyFinal,
+            start: EMPTY_ADDRESS,
+            end: EMPTY_ADDRESS,
+            is_final: true,
+            ntrans: 0,
+            sizes: PackSizes::new(),
+            final_output: Output::zero(),
+        },
         OneTransNext(s) => {
-            let data = &data[..addr + 1];
+            let data = &data[..=addr];
             Node {
-                data: data,
-                version: version,
-                state: state,
+                data,
+                version,
+                state,
                 start: addr,
                 end: s.end_addr(data),
                 is_final: false,
@@ -87,33 +85,33 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: &[u8]) -> Node {
             }
         }
         OneTrans(s) => {
-            let data = &data[..addr + 1];
+            let data = &data[..=addr];
             let sizes = s.sizes(data);
             Node {
-                data: data,
-                version: version,
-                state: state,
+                data,
+                version,
+                state,
                 start: addr,
                 end: s.end_addr(data, sizes),
                 is_final: false,
                 ntrans: 1,
-                sizes: sizes,
+                sizes,
                 final_output: Output::zero(),
             }
         }
         AnyTrans(s) => {
-            let data = &data[..addr + 1];
+            let data = &data[..=addr];
             let sizes = s.sizes(data);
             let ntrans = s.ntrans(data);
             Node {
-                data: data,
-                version: version,
-                state: state,
+                data,
+                version,
+                state,
                 start: addr,
                 end: s.end_addr(version, data, sizes, ntrans),
                 is_final: s.is_final_state(),
-                ntrans: ntrans,
-                sizes: sizes,
+                ntrans,
+                sizes,
                 final_output: s.final_output(version, data, sizes, ntrans),
             }
         }
@@ -125,7 +123,10 @@ impl<'f> Node<'f> {
     /// order.
     #[inline]
     pub fn transitions<'n>(&'n self) -> Transitions<'f, 'n> {
-        Transitions { node: self, range: 0..self.len() }
+        Transitions {
+            node: self,
+            range: 0..self.len(),
+        }
     }
 
     /// Returns the transition at index `i`.
@@ -134,7 +135,7 @@ impl<'f> Node<'f> {
         use self::State::*;
         match self.state {
             OneTransNext(s) => {
-                assert!(i == 0);
+                assert_eq!(i, 0);
                 Transition {
                     inp: s.input(self),
                     out: Output::zero(),
@@ -142,20 +143,18 @@ impl<'f> Node<'f> {
                 }
             }
             OneTrans(s) => {
-                assert!(i == 0);
+                assert_eq!(i, 0);
                 Transition {
                     inp: s.input(self),
                     out: s.output(self),
                     addr: s.trans_addr(self),
                 }
             }
-            AnyTrans(s) => {
-                Transition {
-                    inp: s.input(self, i),
-                    out: s.output(self, i),
-                    addr: s.trans_addr(self, i),
-                }
-            }
+            AnyTrans(s) => Transition {
+                inp: s.input(self, i),
+                out: s.output(self, i),
+                addr: s.trans_addr(self, i),
+            },
             EmptyFinal => panic!("out of bounds"),
         }
     }
@@ -166,11 +165,11 @@ impl<'f> Node<'f> {
         use self::State::*;
         match self.state {
             OneTransNext(s) => {
-                assert!(i == 0);
+                assert_eq!(i, 0);
                 s.trans_addr(self)
             }
             OneTrans(s) => {
-                assert!(i == 0);
+                assert_eq!(i, 0);
                 s.trans_addr(self)
             }
             AnyTrans(s) => s.trans_addr(self, i),
@@ -253,27 +252,24 @@ impl<'f> Node<'f> {
         node: &BuilderNode,
     ) -> io::Result<()> {
         assert!(node.trans.len() <= 256);
-        if node.trans.is_empty()
-            && node.is_final
-            && node.final_output.is_zero() {
-            return Ok(());
+        if node.trans.is_empty() && node.is_final && node.final_output.is_zero() {
+            Ok(())
         } else if node.trans.len() != 1 || node.is_final {
             StateAnyTrans::compile(wtr, addr, node)
+        } else if node.is_final || node.trans[0].addr != last_addr || !node.trans[0].out.is_zero() {
+            StateOneTrans::compile(wtr, addr, node.trans[0])
         } else {
-            if !node.is_final
-                && node.trans[0].addr == last_addr
-                && node.trans[0].out.is_zero() {
-                StateOneTransNext::compile(wtr, addr, node.trans[0].inp)
-            } else {
-                StateOneTrans::compile(wtr, addr, node.trans[0])
-            }
+            StateOneTransNext::compile(wtr, addr, node.trans[0].inp)
         }
     }
 }
 
 impl BuilderNode {
     pub fn compile_to<W: io::Write>(
-        &self, wtr: W, last_addr: CompiledAddr, addr: CompiledAddr,
+        &self,
+        wtr: W,
+        last_addr: CompiledAddr,
+        addr: CompiledAddr,
     ) -> io::Result<()> {
         Node::compile(wtr, last_addr, addr, self)
     }
@@ -314,9 +310,7 @@ impl State {
 }
 
 impl StateOneTransNext {
-    fn compile<W: io::Write>(
-        mut wtr: W, _: CompiledAddr, input: u8,
-    ) -> io::Result<()> {
+    fn compile<W: io::Write>(mut wtr: W, _: CompiledAddr, input: u8) -> io::Result<()> {
         let mut state = StateOneTransNext::new();
         state.set_common_input(input);
         if state.common_input().is_none() {
@@ -331,26 +325,30 @@ impl StateOneTransNext {
     }
 
     fn set_common_input(&mut self, input: u8) {
-        self.0 = (self.0 & 0b11_000000) | common_idx(input, 0b111111);
+        self.0 = (self.0 & 0b11_000000) | common_idx(input, 0b11_1111);
     }
 
     #[inline(always)]
-    fn common_input(&self) -> Option<u8> {
+    fn common_input(self) -> Option<u8> {
         common_input(self.0 & 0b00_111111)
     }
 
     #[inline(always)]
-    fn input_len(&self) -> usize {
-        if self.common_input().is_none() { 1 } else { 0 }
+    fn input_len(self) -> usize {
+        if self.common_input().is_none() {
+            1
+        } else {
+            0
+        }
     }
 
     #[inline(always)]
-    fn end_addr(&self, data: &[u8]) -> usize {
+    fn end_addr(self, data: &[u8]) -> usize {
         data.len() - 1 - self.input_len()
     }
 
     #[inline(always)]
-    fn input(&self, node: &Node) -> u8 {
+    fn input(self, node: &Node) -> u8 {
         if let Some(inp) = self.common_input() {
             inp
         } else {
@@ -359,15 +357,13 @@ impl StateOneTransNext {
     }
 
     #[inline(always)]
-    fn trans_addr(&self, node: &Node) -> CompiledAddr {
+    fn trans_addr(self, node: &Node) -> CompiledAddr {
         node.end as CompiledAddr - 1
     }
 }
 
 impl StateOneTrans {
-    fn compile<W: io::Write>(
-        mut wtr: W, addr: CompiledAddr, trans: Transition,
-    ) -> io::Result<()> {
+    fn compile<W: io::Write>(mut wtr: W, addr: CompiledAddr, trans: Transition) -> io::Result<()> {
         let out = trans.out.value();
         let output_pack_size = if out == 0 {
             0
@@ -394,29 +390,31 @@ impl StateOneTrans {
     }
 
     fn set_common_input(&mut self, input: u8) {
-        self.0 = (self.0 & 0b10_000000) | common_idx(input, 0b111111);
+        self.0 = (self.0 & 0b10_000000) | common_idx(input, 0b11_1111);
     }
 
     #[inline(always)]
-    fn common_input(&self) -> Option<u8> {
+    fn common_input(self) -> Option<u8> {
         common_input(self.0 & 0b00_111111)
     }
 
     #[inline(always)]
-    fn input_len(&self) -> usize {
-        if self.common_input().is_none() { 1 } else { 0 }
+    fn input_len(self) -> usize {
+        if self.common_input().is_none() {
+            1
+        } else {
+            0
+        }
     }
 
     #[inline(always)]
-    fn sizes(&self, data: &[u8]) -> PackSizes {
-        let i = data.len() - 1
-                - self.input_len()
-                - 1;
+    fn sizes(self, data: &[u8]) -> PackSizes {
+        let i = data.len() - 1 - self.input_len() - 1;
         PackSizes::decode(data[i])
     }
 
     #[inline(always)]
-    fn end_addr(&self, data: &[u8], sizes: PackSizes) -> usize {
+    fn end_addr(self, data: &[u8], sizes: PackSizes) -> usize {
         data.len() - 1
         - self.input_len()
         - 1 // pack size
@@ -425,7 +423,7 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn input(&self, node: &Node) -> u8 {
+    fn input(self, node: &Node) -> u8 {
         if let Some(inp) = self.common_input() {
             inp
         } else {
@@ -434,7 +432,7 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn output(&self, node: &Node) -> Output {
+    fn output(self, node: &Node) -> Output {
         let osize = node.sizes.output_pack_size();
         if osize == 0 {
             return Output::zero();
@@ -448,7 +446,7 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn trans_addr(&self, node: &Node) -> CompiledAddr {
+    fn trans_addr(self, node: &Node) -> CompiledAddr {
         let tsize = node.sizes.transition_pack_size();
         let i = node.start
                 - self.input_len()
@@ -459,9 +457,7 @@ impl StateOneTrans {
 }
 
 impl StateAnyTrans {
-    fn compile<W: io::Write>(
-        mut wtr: W, addr: CompiledAddr, node: &BuilderNode,
-    ) -> io::Result<()> {
+    fn compile<W: io::Write>(mut wtr: W, addr: CompiledAddr, node: &BuilderNode) -> io::Result<()> {
         assert!(node.trans.len() <= 256);
 
         let mut tsize = 0;
@@ -537,7 +533,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn is_final_state(&self) -> bool {
+    fn is_final_state(self) -> bool {
         self.0 & 0b01_000000 == 0b01_000000
     }
 
@@ -548,7 +544,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn state_ntrans(&self) -> Option<u8> {
+    fn state_ntrans(self) -> Option<u8> {
         let n = self.0 & 0b00_111111;
         if n == 0 {
             None
@@ -558,26 +554,19 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn sizes(&self, data: &[u8]) -> PackSizes {
-        let i = data.len() - 1
-                - self.ntrans_len()
-                - 1;
+    fn sizes(self, data: &[u8]) -> PackSizes {
+        let i = data.len() - 1 - self.ntrans_len() - 1;
         PackSizes::decode(data[i])
     }
 
     #[inline(always)]
-    fn total_trans_size(
-        &self,
-        version: u64,
-        sizes: PackSizes,
-        ntrans: usize,
-    ) -> usize {
+    fn total_trans_size(self, version: u64, sizes: PackSizes, ntrans: usize) -> usize {
         let index_size = self.trans_index_size(version, ntrans);
         ntrans + (ntrans * sizes.transition_pack_size()) + index_size
     }
 
     #[inline(always)]
-    fn trans_index_size(&self, version: u64, ntrans: usize) -> usize {
+    fn trans_index_size(self, version: u64, ntrans: usize) -> usize {
         if version >= 2 && ntrans > TRANS_INDEX_THRESHOLD {
             256
         } else {
@@ -586,12 +575,16 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn ntrans_len(&self) -> usize {
-        if self.state_ntrans().is_none() { 1 } else { 0 }
+    fn ntrans_len(self) -> usize {
+        if self.state_ntrans().is_none() {
+            1
+        } else {
+            0
+        }
     }
 
     #[inline(always)]
-    fn ntrans(&self, data: &[u8]) -> usize {
+    fn ntrans(self, data: &[u8]) -> usize {
         if let Some(n) = self.state_ntrans() {
             n as usize
         } else {
@@ -607,13 +600,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn final_output(
-        &self,
-        version: u64,
-        data: &[u8],
-        sizes: PackSizes,
-        ntrans: usize,
-    ) -> Output {
+    fn final_output(self, version: u64, data: &[u8], sizes: PackSizes, ntrans: usize) -> Output {
         let osize = sizes.output_pack_size();
         if osize == 0 || !self.is_final_state() {
             return Output::zero();
@@ -628,19 +615,9 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn end_addr(
-        &self,
-        version: u64,
-        data: &[u8],
-        sizes: PackSizes,
-        ntrans: usize,
-    ) -> usize {
+    fn end_addr(self, version: u64, data: &[u8], sizes: PackSizes, ntrans: usize) -> usize {
         let osize = sizes.output_pack_size();
-        let final_osize = if !self.is_final_state() {
-            0
-        } else {
-            osize
-        };
+        let final_osize = if !self.is_final_state() { 0 } else { osize };
         data.len() - 1
         - self.ntrans_len()
         - 1 // pack size
@@ -650,7 +627,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn trans_addr(&self, node: &Node, i: usize) -> CompiledAddr {
+    fn trans_addr(self, node: &Node, i: usize) -> CompiledAddr {
         assert!(i < node.ntrans);
         let tsize = node.sizes.transition_pack_size();
         let at = node.start
@@ -664,7 +641,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn input(&self, node: &Node, i: usize) -> u8 {
+    fn input(self, node: &Node, i: usize) -> u8 {
         let at = node.start
                  - self.ntrans_len()
                  - 1 // pack size
@@ -675,7 +652,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn find_input(&self, node: &Node, b: u8) -> Option<usize> {
+    fn find_input(self, node: &Node, b: u8) -> Option<usize> {
         if node.version >= 2 && node.ntrans > TRANS_INDEX_THRESHOLD {
             let start = node.start
                         - self.ntrans_len()
@@ -694,12 +671,15 @@ impl StateAnyTrans {
                         - node.ntrans; // inputs
             let end = start + node.ntrans;
             let inputs = &node.data[start..end];
-            inputs.iter().position(|&b2| b == b2).map(|i| node.ntrans - i - 1)
+            inputs
+                .iter()
+                .position(|&b2| b == b2)
+                .map(|i| node.ntrans - i - 1)
         }
     }
 
     #[inline(always)]
-    fn output(&self, node: &Node, i: usize) -> Output {
+    fn output(self, node: &Node, i: usize) -> Output {
         let osize = node.sizes.output_pack_size();
         if osize == 0 {
             return Output::zero();
@@ -733,7 +713,7 @@ impl PackSizes {
     }
 
     #[inline(always)]
-    fn encode(&self) -> u8 {
+    fn encode(self) -> u8 {
         self.0
     }
 
@@ -744,7 +724,7 @@ impl PackSizes {
     }
 
     #[inline(always)]
-    fn transition_pack_size(&self) -> usize {
+    fn transition_pack_size(self) -> usize {
         ((self.0 & 0b1111_0000) >> 4) as usize
     }
 
@@ -755,7 +735,7 @@ impl PackSizes {
     }
 
     #[inline(always)]
-    fn output_pack_size(&self) -> usize {
+    fn output_pack_size(self) -> usize {
         (self.0 & 0b0000_1111) as usize
     }
 }
@@ -843,11 +823,7 @@ fn pack_delta_size(node_addr: CompiledAddr, trans_addr: CompiledAddr) -> u8 {
 }
 
 #[inline(always)]
-fn unpack_delta(
-    slice: &[u8],
-    trans_pack_size: usize,
-    node_addr: usize,
-) -> CompiledAddr {
+fn unpack_delta(slice: &[u8], trans_pack_size: usize, node_addr: usize) -> CompiledAddr {
     let delta = unpack_uint(slice, trans_pack_size as u8);
     let delta_addr = u64_to_usize(delta);
     if delta_addr == EMPTY_ADDRESS {
@@ -859,12 +835,12 @@ fn unpack_delta(
 
 #[cfg(test)]
 mod tests {
-    use quickcheck::{TestResult, quickcheck};
+    use quickcheck::{quickcheck, TestResult};
 
-    use raw::{VERSION, Builder, Transition, CompiledAddr, Fst, Output};
-    use raw::build::BuilderNode;
-    use raw::node::{Node, node_new};
-    use stream::Streamer;
+    use crate::raw::build::BuilderNode;
+    use crate::raw::node::{node_new, Node};
+    use crate::raw::{Builder, CompiledAddr, Fst, Output, Transition, VERSION};
+    use crate::stream::Streamer;
 
     const NEVER_LAST: CompiledAddr = ::std::u64::MAX as CompiledAddr;
 
@@ -894,8 +870,7 @@ mod tests {
         assert_eq!(compiled.is_final(), uncompiled.is_final);
         assert_eq!(compiled.len(), uncompiled.trans.len());
         assert_eq!(compiled.final_output(), uncompiled.final_output);
-        for (ct, ut)
-         in compiled.transitions().zip(uncompiled.trans.iter().cloned()) {
+        for (ct, ut) in compiled.transitions().zip(uncompiled.trans.iter().cloned()) {
             assert_eq!(ct.inp, ut.inp);
             assert_eq!(ct.out, ut.out);
             assert_eq!(ct.addr, ut.addr);
@@ -916,7 +891,11 @@ mod tests {
     }
 
     fn trans(addr: CompiledAddr, inp: u8) -> Transition {
-        Transition { inp: inp, out: Output::zero(), addr: addr }
+        Transition {
+            inp,
+            out: Output::zero(),
+            addr,
+        }
     }
 
     #[test]
@@ -964,9 +943,12 @@ mod tests {
             is_final: false,
             final_output: Output::zero(),
             trans: vec![
-                trans(2, b'a'), trans(3, b'b'),
-                trans(4, b'c'), trans(5, b'd'),
-                trans(6, b'e'), trans(7, b'f'),
+                trans(2, b'a'),
+                trans(3, b'b'),
+                trans(4, b'c'),
+                trans(5, b'd'),
+                trans(6, b'e'),
+                trans(7, b'f'),
             ],
         };
         let (addr, buf) = compile(&bnode);

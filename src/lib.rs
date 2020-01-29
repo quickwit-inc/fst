@@ -5,24 +5,21 @@
 //! Parts of this crate were retrofitted from a PR by Clément Renault
 //! https://github.com/BurntSushi/fst/pull/61
 #![warn(missing_docs)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::should_implement_trait)]
 
-extern crate byteorder;
-#[cfg(test)] extern crate quickcheck;
-#[cfg(test)] extern crate rand;
-#[cfg(test)] extern crate proptest;
-
-pub use automaton::Automaton;
-pub use error::{Error, Result};
-pub use map::{Map, MapBuilder};
-pub use stream::{IntoStreamer, Streamer};
+pub use crate::automaton::Automaton;
+pub use crate::error::{Error, Result};
+pub use crate::map::{Map, MapBuilder};
+pub use crate::stream::{IntoStreamer, Streamer};
 
 mod regex;
 
 pub use self::regex::Regex;
 
+mod error;
 #[path = "automaton/mod.rs"]
 mod inner_automaton;
-mod error;
 #[path = "map.rs"]
 mod inner_map;
 pub mod raw;
@@ -33,7 +30,7 @@ mod stream;
 /// This module defines a trait, `Automaton`, with several implementations
 /// including, but not limited to, union, intersection and complement.
 pub mod automaton {
-    pub use inner_automaton::*;
+    pub use crate::inner_automaton::*;
 }
 
 /// Map operations implemented by finite state transducers.
@@ -52,5 +49,5 @@ pub mod automaton {
 /// option of specifying a merge strategy for a map's values. The rest of the
 /// types are streams for set operations.
 pub mod map {
-    pub use inner_map::*;
+    pub use crate::inner_map::*;
 }
