@@ -1,6 +1,3 @@
-extern crate levenshtein_automata;
-
-use self::levenshtein_automata::Distance;
 use self::StartsWithStateInternal::*;
 
 /// Automaton describes types that behave as a finite automaton.
@@ -128,24 +125,6 @@ impl<'a, T: Automaton> Automaton for &'a T {
     }
 }
 
-impl Automaton for levenshtein_automata::DFA {
-    type State = u32;
-
-    fn start(&self) -> Self::State {
-        self.initial_state()
-    }
-
-    fn is_match(&self, state: &Self::State) -> bool {
-        match self.distance(*state) {
-            Distance::Exact(_) => true,
-            Distance::AtLeast(_) => false,
-        }
-    }
-
-    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
-        self.transition(*state, byte)
-    }
-}
 
 /// An automaton that matches if the input contains a specific subsequence.
 #[derive(Clone, Debug)]
