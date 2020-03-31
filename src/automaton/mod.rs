@@ -125,7 +125,6 @@ impl<'a, T: Automaton> Automaton for &'a T {
     }
 }
 
-
 /// An automaton that matches if the input contains a specific subsequence.
 #[derive(Clone, Debug)]
 pub struct Subsequence<'a> {

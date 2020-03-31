@@ -1,8 +1,7 @@
+use crate::raw;
 use std::error;
 use std::fmt;
 use std::io;
-
-use crate::raw;
 
 /// A `Result` type alias for this crate's `Error` type.
 pub type Result<T> = ::std::result::Result<T, Error>;
@@ -42,14 +41,6 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {
-    fn description(&self) -> &str {
-        use self::Error::*;
-        match *self {
-            Fst(ref err) => err.description(),
-            Io(ref err) => err.description(),
-        }
-    }
-
     fn cause(&self) -> Option<&dyn error::Error> {
         use self::Error::*;
         match *self {

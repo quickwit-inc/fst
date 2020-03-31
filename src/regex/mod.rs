@@ -1,9 +1,7 @@
-extern crate regex_syntax;
-extern crate utf8_ranges;
-
-use std::fmt;
-
 use crate::Automaton;
+use regex_syntax;
+use std::fmt;
+use utf8_ranges;
 
 mod compile;
 mod dfa;
