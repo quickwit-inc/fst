@@ -1,7 +1,10 @@
-use super::regex_syntax::{CharClass, ClassRange, Expr, Repeater};
-use super::utf8_ranges::{Utf8Sequence, Utf8Sequences};
 use super::Error;
 use super::Inst;
+use regex_syntax::hir::{
+    Class, ClassUnicode, ClassUnicodeRange, Literal, Repetition, RepetitionKind, RepetitionRange,
+};
+use regex_syntax::hir::{Hir, HirKind};
+use utf8_ranges::{Utf8Sequence, Utf8Sequences};
 
 pub struct Compiler {
     size_limit: usize,
@@ -16,69 +19,38 @@ impl Compiler {
         }
     }
 
-    pub fn compile(mut self, ast: &Expr) -> Result<Vec<Inst>, Error> {
-        self.c(ast)?;
+    pub fn compile(mut self, hir: &Hir) -> Result<Vec<Inst>, Error> {
+        self.c(hir)?;
         self.insts.push(Inst::Match);
         Ok(self.insts)
     }
 
-    fn c(&mut self, ast: &Expr) -> Result<(), Error> {
-        match *ast {
-            Expr::StartLine | Expr::EndLine | Expr::StartText | Expr::EndText => {
-                return Err(Error::NoEmpty)
-            }
-            Expr::WordBoundary
-            | Expr::NotWordBoundary
-            | Expr::WordBoundaryAscii
-            | Expr::NotWordBoundaryAscii => {
+    fn c(&mut self, hir: &Hir) -> Result<(), Error> {
+        match hir.kind() {
+            HirKind::Anchor(_) => return Err(Error::NoEmpty),
+            HirKind::WordBoundary(_) => {
                 return Err(Error::NoWordBoundary);
             }
-            Expr::LiteralBytes { .. }
-            | Expr::AnyByte
-            | Expr::AnyByteNoNL
-            | Expr::ClassBytes(..) => {
-                return Err(Error::NoBytes);
-            }
-            Expr::Empty => {}
-            Expr::Literal { ref chars, casei } => {
-                for &c in chars {
-                    if casei {
-                        self.c(&Expr::Class(
-                            CharClass::new(vec![ClassRange { start: c, end: c }]).case_fold(),
-                        ))?;
-                    } else {
-                        // One scalar value, so we're guaranteed to get a
-                        // single byte sequence.
-                        for seq in Utf8Sequences::new(c, c) {
-                            self.compile_utf8_ranges(&seq);
-                        }
+            HirKind::Literal(literal) => match *literal {
+                Literal::Byte(_) => return Err(Error::NoBytes),
+                Literal::Unicode(char) => {
+                    for seq in Utf8Sequences::new(char, char) {
+                        self.compile_utf8_ranges(&seq);
                     }
                 }
-            }
-            Expr::AnyChar => self.c(&Expr::Class(CharClass::new(vec![ClassRange {
-                start: '\u{0}',
-                end: '\u{10FFFF}',
-            }])))?,
-            Expr::AnyCharNoNL => self.c(&Expr::Class(CharClass::new(vec![
-                ClassRange {
-                    start: '\u{0}',
-                    end: '\u{09}',
-                },
-                ClassRange {
-                    start: '\u{0B}',
-                    end: '\u{10FFFF}',
-                },
-            ])))?,
-            Expr::Class(ref cls) => {
-                self.compile_class(cls)?;
-            }
-            Expr::Group { ref e, .. } => self.c(e)?,
-            Expr::Concat(ref es) => {
-                for e in es {
-                    self.c(e)?;
+            },
+            HirKind::Class(class) => match class {
+                Class::Bytes(_) => return Err(Error::NoBytes),
+                Class::Unicode(class_unicode) => self.compile_class(class_unicode)?,
+            },
+            HirKind::Empty => {}
+            HirKind::Group(group) => self.c(&group.hir)?,
+            HirKind::Concat(hirs) => {
+                for hir in hirs {
+                    self.c(hir)?;
                 }
             }
-            Expr::Alternate(ref es) => {
+            HirKind::Alternation(es) => {
                 if es.is_empty() {
                     return Ok(());
                 }
@@ -97,93 +69,75 @@ impl Compiler {
                     self.set_jump(jmp_to_end, end);
                 }
             }
-            Expr::Repeat { greedy: false, .. } => {
-                return Err(Error::NoLazy);
-            }
-            Expr::Repeat {
-                ref e,
-                r: Repeater::ZeroOrOne,
-                ..
-            } => {
-                let split = self.empty_split();
-                let j1 = self.insts.len();
-                self.c(e)?;
-                let j2 = self.insts.len();
-                self.set_split(split, j1, j2);
-            }
-            Expr::Repeat {
-                ref e,
-                r: Repeater::ZeroOrMore,
-                ..
-            } => {
-                let j1 = self.insts.len();
-                let split = self.empty_split();
-                let j2 = self.insts.len();
-                self.c(e)?;
-                let jmp = self.empty_jump();
-                let j3 = self.insts.len();
+            HirKind::Repetition(repetition) => {
+                if repetition.greedy == false {
+                    return Err(Error::NoLazy);
+                }
+                match &repetition.kind {
+                    RepetitionKind::ZeroOrOne => {
+                        let split = self.empty_split();
+                        let j1 = self.insts.len();
+                        self.c(&repetition.hir)?;
+                        let j2 = self.insts.len();
+                        self.set_split(split, j1, j2);
+                    }
+                    RepetitionKind::ZeroOrMore => {
+                        let j1 = self.insts.len();
+                        let split = self.empty_split();
+                        let j2 = self.insts.len();
+                        self.c(&repetition.hir)?;
+                        let jmp = self.empty_jump();
+                        let j3 = self.insts.len();
 
-                self.set_jump(jmp, j1);
-                self.set_split(split, j2, j3);
-            }
-            Expr::Repeat {
-                ref e,
-                r: Repeater::OneOrMore,
-                ..
-            } => {
-                let j1 = self.insts.len();
-                self.c(e)?;
-                let split = self.empty_split();
-                let j2 = self.insts.len();
-                self.set_split(split, j1, j2);
-            }
-            Expr::Repeat {
-                ref e,
-                r: Repeater::Range { min, max: None },
-                ..
-            } => {
-                for _ in 0..min {
-                    self.c(e)?;
-                }
-                self.c(&Expr::Repeat {
-                    e: e.clone(),
-                    r: Repeater::ZeroOrMore,
-                    greedy: true,
-                })?;
-            }
-            Expr::Repeat {
-                ref e,
-                r:
-                    Repeater::Range {
-                        min,
-                        max: Some(max),
+                        self.set_jump(jmp, j1);
+                        self.set_split(split, j2, j3);
+                    }
+                    RepetitionKind::OneOrMore => {
+                        let j1 = self.insts.len();
+                        self.c(&repetition.hir)?;
+                        let split = self.empty_split();
+                        let j2 = self.insts.len();
+                        self.set_split(split, j1, j2);
+                    }
+                    RepetitionKind::Range(range) => match *range {
+                        RepetitionRange::AtLeast(min) | RepetitionRange::Exactly(min) => {
+                            for _ in 0..min {
+                                self.c(&repetition.hir)?;
+                            }
+                            self.c(&Hir::repetition(Repetition {
+                                kind: RepetitionKind::ZeroOrMore,
+                                greedy: true,
+                                hir: repetition.hir.clone(),
+                            }))?;
+                        }
+                        RepetitionRange::Bounded(min, max) => {
+                            for _ in 0..min {
+                                self.c(&repetition.hir)?;
+                            }
+                            let (mut splits, mut starts) = (vec![], vec![]);
+                            for _ in min..max {
+                                splits.push(self.empty_split());
+                                starts.push(self.insts.len());
+                                self.c(&repetition.hir)?;
+                            }
+                            let end = self.insts.len();
+                            for (split, start) in splits.into_iter().zip(starts) {
+                                self.set_split(split, start, end);
+                            }
+                        }
                     },
-                ..
-            } => {
-                for _ in 0..min {
-                    self.c(e)?;
-                }
-                let (mut splits, mut starts) = (vec![], vec![]);
-                for _ in min..max {
-                    splits.push(self.empty_split());
-                    starts.push(self.insts.len());
-                    self.c(e)?;
-                }
-                let end = self.insts.len();
-                for (split, start) in splits.into_iter().zip(starts) {
-                    self.set_split(split, start, end);
                 }
             }
         }
         self.check_size()
     }
 
-    fn compile_class(&mut self, class: &CharClass) -> Result<(), Error> {
-        if class.is_empty() {
+    fn compile_class(&mut self, class: &ClassUnicode) -> Result<(), Error> {
+        if class.ranges().is_empty() {
             return Ok(());
         }
         let mut jmps = vec![];
-        for &r in &class[0..class.len() - 1] {
+        for &r in &class.ranges()[0..class.ranges().len() - 1] {
             let split = self.empty_split();
             let j1 = self.insts.len();
             self.compile_class_range(r)?;
@@ -191,7 +145,7 @@ impl Compiler {
             let j2 = self.insts.len();
             self.set_split(split, j1, j2);
         }
-        self.compile_class_range(class[class.len() - 1])?;
+        self.compile_class_range(*class.ranges().last().unwrap())?;
         let end = self.insts.len();
         for jmp in jmps {
             self.set_jump(jmp, end);
@@ -199,8 +153,8 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_class_range(&mut self, char_range: ClassRange) -> Result<(), Error> {
-        let mut it = Utf8Sequences::new(char_range.start, char_range.end).peekable();
+    fn compile_class_range(&mut self, char_range: ClassUnicodeRange) -> Result<(), Error> {
+        let mut it = Utf8Sequences::new(char_range.start(), char_range.end()).peekable();
         let mut jmps = vec![];
         let mut utf8_ranges = it.next().expect("non-empty char class");
         while it.peek().is_some() {

@@ -83,8 +83,8 @@ impl Regex {
     }
 
     fn with_size_limit(size: usize, re: &str) -> Result<Regex, Error> {
-        let expr = regex_syntax::Expr::parse(re)?;
-        let insts = self::compile::Compiler::new(size).compile(&expr)?;
+        let hir = regex_syntax::Parser::new().parse(re)?;
+        let insts = self::compile::Compiler::new(size).compile(&hir)?;
         let dfa = self::dfa::DfaBuilder::new(insts).build()?;
         Ok(Regex {
             original: re.to_owned(),
