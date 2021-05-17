@@ -1,4 +1,4 @@
-use crate::automaton::AlwaysMatch;
+use crate::{automaton::AlwaysMatch, fake_arr::FakeArr};
 use crate::error::Error;
 use crate::inner_automaton::Automaton;
 use crate::raw::{self, Bound, Buffer, Builder, Fst, Output, Stream, VERSION};
@@ -31,7 +31,7 @@ where
     for s in ss.iter().into_iter() {
         bfst.add(s).unwrap();
     }
-    let fst = Fst::new(bfst.into_inner().unwrap()).unwrap();
+    let fst = Fst::new(Box::new(bfst.into_inner().unwrap()) as Box<dyn FakeArr>).unwrap();
     ss.dedup();
     assert_eq!(fst.len(), ss.len());
     fst
@@ -52,7 +52,8 @@ where
     for (s, o) in ss.into_iter() {
         bfst.insert(s, o).unwrap();
     }
-    Fst::new(bfst.into_inner().unwrap()).unwrap()
+    let d = bfst.into_inner().unwrap();
+    Fst::new(Box::new(d) as Box<FakeArr>).unwrap()
 }
 
 pub fn fst_inputs(fst: &Fst) -> Vec<Vec<u8>> {
@@ -83,7 +84,7 @@ macro_rules! test_set {
             items.sort();
             items.dedup();
             for item in &items {
-                assert_eq!(rdr.next().unwrap().0, item.as_bytes());
+                assert_eq!(&rdr.next().unwrap().0.to_vec()[..], item.as_bytes());
             }
             assert_eq!(rdr.next(), None);
             for item in &items {
@@ -138,7 +139,7 @@ macro_rules! test_map {
             let mut rdr = fst.stream();
             $({
                 let (s, o) = rdr.next().unwrap();
-                assert_eq!((s, o.value()), ($s.as_bytes(), $o));
+                assert_eq!((&s.to_vec()[..], o.value()), ($s.as_bytes(), $o));
             })*
             assert_eq!(rdr.next(), None);
             $({
@@ -219,7 +220,7 @@ fn fst_map_100000_lengths() {
 
 #[test]
 fn invalid_version() {
-    match Fst::new(vec![0; 32]) {
+    match Fst::new_box(vec![0; 32]) {
         Err(Error::Fst(raw::Error::Version { got, .. })) => assert_eq!(got, 0),
         Err(err) => panic!("expected version error, got {:?}", err),
         Ok(_) => panic!("expected version error, got FST"),
@@ -232,7 +233,7 @@ fn invalid_version_crate_too_old() {
 
     let mut buf = vec![0; 32];
     LittleEndian::write_u64(&mut buf, VERSION + 1);
-    match Fst::new(buf) {
+    match Fst::new_box(buf) {
         Err(Error::Fst(raw::Error::Version { got, .. })) => {
             assert_eq!(got, VERSION + 1);
         }
@@ -243,7 +244,7 @@ fn invalid_version_crate_too_old() {
 
 #[test]
 fn invalid_format() {
-    match Fst::new(vec![0; 0]) {
+    match Fst::new_box(vec![0; 0]) {
         Err(Error::Fst(raw::Error::Format)) => {}
         Err(err) => panic!("expected format error, got {:?}", err),
         Ok(_) => panic!("expected format error, got FST"),
@@ -276,22 +277,50 @@ macro_rules! test_range {
             {
                 let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max, false);
                 for i in $imin..$imax {
-                    assert_eq!(rdr.next().unwrap(),
-                               (items[i].0.as_bytes(), Output::new(items[i].1)));
+                    assert_eq!(to_mem(rdr.next().unwrap()),
+                               (items[i].0.as_bytes().to_vec(), Output::new(items[i].1)));
                 }
                 assert_eq!(rdr.next(), None);
             }
             {
                 let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max, true);
                 for i in ($imin..$imax).rev() {
-                    assert_eq!(rdr.next().unwrap(),
-                               (items[i].0.as_bytes(), Output::new(items[i].1)));
+                    assert_eq!(to_mem(rdr.next().unwrap()),
+                               (items[i].0.as_bytes().to_vec(), Output::new(items[i].1)));
                 }
                 assert_eq!(rdr.next(), None);
             }
         }
     }
 }
+
+fn to_mem(v: (&dyn FakeArr, raw::Output)) -> (Vec<u8>, raw::Output) {
+    (v.0.to_vec(), v.1)
+}
+/*fn flonk() {
+    let items: Vec<&'static str> = vec![];
+    let items: Vec<_> =
+        items.into_iter().enumerate()
+             .map(|(i, k)| (k, i as u64)).collect();
+    let fst: Fst = fst_map(items.clone()).into();
+    {
+        let mut rdr = Stream::new(&fst.meta, &fst.data, AlwaysMatch, Bound::Unbounded, Bound::Unbounded, false);
+        for i in 0..0 {
+            assert_eq!(to_mem(rdr.next().unwrap()),
+                       (items[i].0.as_bytes().to_vec(), Output::new(items[i].1)));
+        }
+        assert_eq!(rdr.next(), None);
+    }
+    {
+        let mut rdr = Stream::new(&fst.meta, &fst.data, AlwaysMatch, Bound::Unbounded, Bound::Unbounded, true);
+        for i in 0..0.rev() {
+            assert_eq!(to_mem(rdr.next().unwrap()),
+                       (items[i].0.as_bytes(), Output::new(items[i].1)));
+        }
+        assert_eq!(rdr.next(), None);
+    }
+}*/
+
 
 test_range! {
     fst_range_empty_1,
@@ -631,7 +660,7 @@ fn test_return_node_on_reverse_only_if_match() {
     let fst: Fst = fst_map(items.clone()).into();
     let automaton = Regex::new("ab").unwrap();
     let mut stream = fst.search(automaton).backward().into_stream();
-    assert_eq!(stream.next(), Some((&b"ab"[..], Output::new(1u64))));
+    assert_eq!(stream.next().map(to_mem), Some((b"ab"[..].to_vec(), Output::new(1u64))));
     assert_eq!(stream.next(), None);
 }
 
@@ -756,7 +785,7 @@ where
         );
         for &(exp_k, exp_v) in &expected_items {
             if let Some((k, v)) = stream.next() {
-                assert_eq!(k, exp_k.as_bytes());
+                assert_eq!(&k.to_vec(), exp_k.as_bytes());
                 assert_eq!(v, Output::new(exp_v));
             } else {
                 assert!(false);
@@ -769,7 +798,7 @@ where
         let mut stream = Stream::new(&fst.meta, fst.data.deref(), &aut, min, max, true);
         for &(exp_k, exp_v) in expected_items.iter().rev() {
             if let Some((k, v)) = stream.next() {
-                assert_eq!(k, exp_k.as_bytes());
+                assert_eq!(&k.to_vec(), exp_k.as_bytes());
                 assert_eq!(v, Output::new(exp_v));
             } else {
                 assert!(false);
@@ -792,7 +821,7 @@ fn test_simple() {
         Bound::Included(b"a".to_vec()),
         true,
     );
-    assert_eq!(stream.next(), Some((&b""[..], Output::new(0u64))));
+    assert_eq!(stream.next().map(to_mem), Some((b""[..].to_vec(), Output::new(0u64))));
     assert!(stream.next().is_none());
 }
 
@@ -924,8 +953,8 @@ macro_rules! test_range_with_aut {
                 let mut rdr = Stream::new(&fst.meta, fst.data.deref(), $aut, $min, $max, false);
                 for i in $imin..$imax {
                     assert_eq!(
-                        rdr.next().unwrap(),
-                        (output[i].0.as_bytes(), Output::new(output[i].1))
+                        to_mem(rdr.next().unwrap()),
+                        (output[i].0.as_bytes().to_vec(), Output::new(output[i].1))
                     );
                 }
                 assert_eq!(rdr.next(), None);
@@ -934,8 +963,8 @@ macro_rules! test_range_with_aut {
                 let mut rdr = Stream::new(&fst.meta, fst.data.deref(), $aut, $min, $max, true);
                 for i in ($imin..$imax).rev() {
                     assert_eq!(
-                        rdr.next().unwrap(),
-                        (output[i].0.as_bytes(), Output::new(output[i].1))
+                        to_mem(rdr.next().unwrap()),
+                        (output[i].0.as_bytes().to_vec(), Output::new(output[i].1))
                     );
                 }
                 assert_eq!(rdr.next(), None);

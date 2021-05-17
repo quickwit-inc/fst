@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use byteorder::{LittleEndian, WriteBytesExt};
 
-use crate::error::Result;
+use crate::{error::Result, fake_arr::FakeArrRef};
 use crate::raw::counting_writer::CountingWriter;
 use crate::raw::error::Error;
 use crate::raw::registry::{Registry, RegistryEntry};
@@ -184,12 +184,12 @@ impl<W: io::Write> Builder<W> {
     /// writing to the underlying writer, an error is returned.
     pub fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         let mut stream = stream.into_stream();
         while let Some((key, out)) = stream.next() {
-            self.insert(key, out.value())?;
+            self.insert(key.actually_read_it(), out.value())?;
         }
         Ok(())
     }

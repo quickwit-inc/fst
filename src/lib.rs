@@ -14,6 +14,7 @@ pub use crate::map::{Map, MapBuilder};
 pub use crate::stream::{IntoStreamer, Streamer};
 
 mod regex;
+mod fake_arr;
 
 pub use self::regex::Regex;
 

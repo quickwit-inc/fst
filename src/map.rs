@@ -2,7 +2,7 @@ use std::fmt;
 use std::io;
 use std::iter::FromIterator;
 
-use crate::automaton::{AlwaysMatch, Automaton};
+use crate::{automaton::{AlwaysMatch, Automaton}, fake_arr::{FakeArr, FakeArrRef}};
 use crate::raw;
 pub use crate::raw::IndexedValue;
 use crate::stream::{IntoStreamer, Streamer};
@@ -53,42 +53,9 @@ use std::ops::Deref;
 /// Keys will always be byte strings; however, we may grow more conveniences
 /// around dealing with them (such as a serialization/deserialization step,
 /// although it isn't clear where exactly this should live).
-pub struct Map<Data>(raw::Fst<Data>);
+pub struct Map<Data: Deref<Target = dyn FakeArr>>(raw::Fst<Data>);
 
-impl Map<Vec<u8>> {
-    /// Creates a map from its representation as a raw byte sequence.
-    ///
-    /// Note that this operation is very cheap (no allocations and no copies).
-    ///
-    /// The map must have been written with a compatible finite state
-    /// transducer builder (`MapBuilder` qualifies). If the format is invalid
-    /// or if there is a mismatch between the API version of this library
-    /// and the map, then an error is returned.
-    pub fn from_bytes(bytes: Vec<u8>) -> Result<Map<Vec<u8>>> {
-        raw::Fst::new(bytes).map(Map)
-    }
-
-    /// Create a `Map` from an iterator of lexicographically ordered byte
-    /// strings and associated values.
-    ///
-    /// If the iterator does not yield unique keys in lexicographic order, then
-    /// an error is returned.
-    ///
-    /// Note that this is a convenience function to build a map in memory.
-    /// To build a map that streams to an arbitrary `io::Write`, use
-    /// `MapBuilder`.
-    pub fn from_iter<K, I>(iter: I) -> Result<Self>
-    where
-        K: AsRef<[u8]>,
-        I: IntoIterator<Item = (K, u64)>,
-    {
-        let mut builder = MapBuilder::memory();
-        builder.extend_iter(iter)?;
-        Map::from_bytes(builder.into_inner()?)
-    }
-}
-
-impl<Data: Deref<Target = [u8]>> Map<Data> {
+impl<Data: Deref<Target = dyn FakeArr>> Map<Data> {
     /// Tests the membership of a single key.
     ///
     /// # Example
@@ -356,7 +323,7 @@ impl<Data: Deref<Target = [u8]>> Map<Data> {
     }
 }
 
-impl<Data: Deref<Target = [u8]>> fmt::Debug for Map<Data> {
+impl<Data: Deref<Target=dyn FakeArr>> fmt::Debug for Map<Data> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Map([")?;
         let mut stream = self.stream();
@@ -366,14 +333,14 @@ impl<Data: Deref<Target = [u8]>> fmt::Debug for Map<Data> {
                 write!(f, ", ")?;
             }
             first = false;
-            write!(f, "({}, {})", String::from_utf8_lossy(k), v)?;
+            write!(f, "({}, {})", String::from_utf8_lossy(&k.actually_read_it()), v)?;
         }
         write!(f, "])")
     }
 }
 
 // Construct a map from an Fst object.
-impl<Data> From<raw::Fst<Data>> for Map<Data> {
+impl<Data: Deref<Target=dyn FakeArr>> From<raw::Fst<Data>> for Map<Data> {
     #[inline]
     fn from(fst: raw::Fst<Data>) -> Self {
         Map(fst)
@@ -381,15 +348,15 @@ impl<Data> From<raw::Fst<Data>> for Map<Data> {
 }
 
 /// Returns the underlying finite state transducer.
-impl<Data> AsRef<raw::Fst<Data>> for Map<Data> {
+impl<Data: Deref<Target=dyn FakeArr>> AsRef<raw::Fst<Data>> for Map<Data> {
     #[inline]
     fn as_ref(&self) -> &raw::Fst<Data> {
         &self.0
     }
 }
 
-impl<'m, 'a, Data: Deref<Target = [u8]>> IntoStreamer<'a> for &'m Map<Data> {
-    type Item = (&'a [u8], u64);
+impl<'m, 'a, Data: Deref<Target = dyn FakeArr>> IntoStreamer<'a> for &'m Map<Data> {
+    type Item = (FakeArrRef<'a>, u64);
     type Into = Stream<'m>;
 
     #[inline]
@@ -514,8 +481,8 @@ impl<W: io::Write> MapBuilder<W> {
     /// writing to the underlying writer, an error is returned.
     pub fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], u64)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], u64)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, u64)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
     {
         self.0.extend_stream(StreamOutput(stream.into_stream()))
     }
@@ -555,7 +522,7 @@ where
     A: Automaton;
 
 impl<'a, 'm, A: Automaton> Streamer<'a> for Stream<'m, A> {
-    type Item = (&'a [u8], u64);
+    type Item = (FakeArrRef<'a>, u64);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         self.0.next().map(|(key, out)| (key, out.value()))
@@ -609,7 +576,7 @@ impl<'m, A: Automaton> Stream<'m, A> {
 pub struct Keys<'m>(raw::Stream<'m>);
 
 impl<'a, 'm> Streamer<'a> for Keys<'m> {
-    type Item = &'a [u8];
+    type Item = FakeArrRef<'a>;
 
     #[inline]
     fn next(&'a mut self) -> Option<Self::Item> {
@@ -680,7 +647,7 @@ impl<'m, A: Automaton> StreamBuilder<'m, A> {
 }
 
 impl<'m, 'a, A: Automaton> IntoStreamer<'a> for StreamBuilder<'m, A> {
-    type Item = (&'a [u8], u64);
+    type Item = (FakeArrRef<'a>, u64);
     type Into = Stream<'m, A>;
 
     fn into_stream(self) -> Self::Into {
@@ -707,7 +674,7 @@ impl<'m, 'a, A: 'a + Automaton> IntoStreamer<'a> for StreamWithStateBuilder<'m, 
 where
     A::State: Clone,
 {
-    type Item = (&'a [u8], u64, A::State);
+    type Item = (FakeArrRef<'a>, u64, A::State);
     type Into = StreamWithState<'m, A>;
 
     fn into_stream(self) -> Self::Into {
@@ -750,8 +717,8 @@ impl<'m> OpBuilder<'m> {
     /// pairs.
     pub fn add<I, S>(mut self, streamable: I) -> Self
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], u64)>,
-        S: 'm + for<'a> Streamer<'a, Item = (&'a [u8], u64)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, u64)>,
+        S: 'm + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
     {
         self.push(streamable);
         self
@@ -763,8 +730,8 @@ impl<'m> OpBuilder<'m> {
     /// pairs.
     pub fn push<I, S>(&mut self, streamable: I)
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], u64)>,
-        S: 'm + for<'a> Streamer<'a, Item = (&'a [u8], u64)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, u64)>,
+        S: 'm + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
     {
         self.0.push(StreamOutput(streamable.into_stream()));
     }
@@ -947,8 +914,8 @@ impl<'m> OpBuilder<'m> {
 
 impl<'f, I, S> Extend<I> for OpBuilder<'f>
 where
-    I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], u64)>,
-    S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], u64)>,
+    I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, u64)>,
+    S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
 {
     fn extend<T>(&mut self, it: T)
     where
@@ -962,8 +929,8 @@ where
 
 impl<'f, I, S> FromIterator<I> for OpBuilder<'f>
 where
-    I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], u64)>,
-    S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], u64)>,
+    I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, u64)>,
+    S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
 {
     fn from_iter<T>(it: T) -> Self
     where
@@ -981,7 +948,7 @@ where
 pub struct Union<'m>(raw::Union<'m>);
 
 impl<'a, 'm> Streamer<'a> for Union<'m> {
-    type Item = (&'a [u8], &'a [IndexedValue]);
+    type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
     #[inline]
     fn next(&'a mut self) -> Option<Self::Item> {
@@ -996,7 +963,7 @@ impl<'a, 'm> Streamer<'a> for Union<'m> {
 pub struct Intersection<'m>(raw::Intersection<'m>);
 
 impl<'a, 'm> Streamer<'a> for Intersection<'m> {
-    type Item = (&'a [u8], &'a [IndexedValue]);
+    type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
     #[inline]
     fn next(&'a mut self) -> Option<Self::Item> {
@@ -1047,9 +1014,9 @@ struct StreamOutput<S>(S);
 
 impl<'a, S> Streamer<'a> for StreamOutput<S>
 where
-    S: Streamer<'a, Item = (&'a [u8], u64)>,
+    S: Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
 {
-    type Item = (&'a [u8], raw::Output);
+    type Item = (FakeArrRef<'a>, raw::Output);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         self.0.next().map(|(k, v)| (k, raw::Output::new(v)))
@@ -1068,7 +1035,7 @@ impl<'a, 'm, A: 'a + Automaton> Streamer<'a> for StreamWithState<'m, A>
 where
     A::State: Clone,
 {
-    type Item = (&'a [u8], u64, A::State);
+    type Item = (FakeArrRef<'a>, u64, A::State);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         self.0

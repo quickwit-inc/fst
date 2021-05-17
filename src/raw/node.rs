@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use byteorder::WriteBytesExt;
 
-use crate::raw::build::BuilderNode;
+use crate::{fake_arr::{EMPTY, FakeArr, FakeArrRef}, raw::build::BuilderNode};
 use crate::raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
 use crate::raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
 use crate::raw::{u64_to_usize, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
@@ -20,7 +20,7 @@ const TRANS_INDEX_THRESHOLD: usize = 32;
 /// Nodes are very cheap to construct. Notably, they satisfy the `Copy` trait.
 #[derive(Clone, Copy)]
 pub struct Node<'f> {
-    data: &'f [u8],
+    data: FakeArrRef<'f>,
     version: u64,
     state: State,
     start: CompiledAddr,
@@ -55,12 +55,12 @@ impl<'f> fmt::Debug for Node<'f> {
 /// This is a free function so that we can export it to parent modules, but
 /// not to consumers of this crate.
 #[inline(always)]
-pub fn node_new(version: u64, addr: CompiledAddr, data: &[u8]) -> Node {
+pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node {
     use self::State::*;
     let state = State::new(data, addr);
     match state {
         EmptyFinal => Node {
-            data: &[],
+            data: EMPTY,
             version,
             state: State::EmptyFinal,
             start: EMPTY_ADDRESS,
@@ -229,8 +229,8 @@ impl<'f> Node<'f> {
 
     #[doc(hidden)]
     #[inline(always)]
-    pub fn as_slice(&self) -> &[u8] {
-        &self.data[self.end..]
+    pub fn as_slice(&self) -> Vec<u8> {
+        self.data[self.end..].to_vec()
     }
 
     #[doc(hidden)]
@@ -295,7 +295,7 @@ struct StateAnyTrans(u8);
 
 impl State {
     #[inline(always)]
-    fn new(data: &[u8], addr: CompiledAddr) -> State {
+    fn new(data: FakeArrRef<'_>, addr: CompiledAddr) -> State {
         use self::State::*;
         if addr == EMPTY_ADDRESS {
             return EmptyFinal;
@@ -343,7 +343,7 @@ impl StateOneTransNext {
     }
 
     #[inline(always)]
-    fn end_addr(self, data: &[u8]) -> usize {
+    fn end_addr(self, data: FakeArrRef) -> usize {
         data.len() - 1 - self.input_len()
     }
 
@@ -408,13 +408,13 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn sizes(self, data: &[u8]) -> PackSizes {
+    fn sizes(self, data: FakeArrRef) -> PackSizes {
         let i = data.len() - 1 - self.input_len() - 1;
         PackSizes::decode(data[i])
     }
 
     #[inline(always)]
-    fn end_addr(self, data: &[u8], sizes: PackSizes) -> usize {
+    fn end_addr(self, data: FakeArrRef, sizes: PackSizes) -> usize {
         data.len() - 1
         - self.input_len()
         - 1 // pack size
@@ -554,7 +554,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn sizes(self, data: &[u8]) -> PackSizes {
+    fn sizes(self, data: FakeArrRef) -> PackSizes {
         let i = data.len() - 1 - self.ntrans_len() - 1;
         PackSizes::decode(data[i])
     }
@@ -584,7 +584,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn ntrans(self, data: &[u8]) -> usize {
+    fn ntrans(self, data: FakeArrRef) -> usize {
         if let Some(n) = self.state_ntrans() {
             n as usize
         } else {
@@ -600,7 +600,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn final_output(self, version: u64, data: &[u8], sizes: PackSizes, ntrans: usize) -> Output {
+    fn final_output(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: usize) -> Output {
         let osize = sizes.output_pack_size();
         if osize == 0 || !self.is_final_state() {
             return Output::zero();
@@ -615,7 +615,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn end_addr(self, version: u64, data: &[u8], sizes: PackSizes, ntrans: usize) -> usize {
+    fn end_addr(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: usize) -> usize {
         let osize = sizes.output_pack_size();
         let final_osize = if !self.is_final_state() { 0 } else { osize };
         data.len() - 1
@@ -671,10 +671,12 @@ impl StateAnyTrans {
                         - node.ntrans; // inputs
             let end = start + node.ntrans;
             let inputs = &node.data[start..end];
-            inputs
-                .iter()
-                .position(|&b2| b == b2)
-                .map(|i| node.ntrans - i - 1)
+            for i in 0..inputs.len() {
+                if inputs[i] == b {
+                    return Some(node.ntrans - i - 1);
+                }
+            }
+            None
         }
     }
 
@@ -823,7 +825,7 @@ fn pack_delta_size(node_addr: CompiledAddr, trans_addr: CompiledAddr) -> u8 {
 }
 
 #[inline(always)]
-fn unpack_delta(slice: &[u8], trans_pack_size: usize, node_addr: usize) -> CompiledAddr {
+fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: usize, node_addr: usize) -> CompiledAddr {
     let delta = unpack_uint(slice, trans_pack_size as u8);
     let delta_addr = u64_to_usize(delta);
     if delta_addr == EMPTY_ADDRESS {
@@ -854,11 +856,11 @@ mod tests {
             for word in &bs {
                 bfst.add(word).unwrap();
             }
-            let fst = Fst::new(bfst.into_inner().unwrap()).unwrap();
+            let fst = Fst::new_box(bfst.into_inner().unwrap()).unwrap();
             let mut rdr = fst.stream();
             let mut words = vec![];
             while let Some(w) = rdr.next() {
-                words.push(w.0.to_owned());
+                words.push(w.0.to_vec());
             }
             TestResult::from_bool(bs == words)
         }

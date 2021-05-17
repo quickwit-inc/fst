@@ -2,6 +2,8 @@ use std::io;
 
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
+use crate::fake_arr::FakeArrRef;
+
 /// pack_uint packs the given integer in the smallest number of bytes possible,
 /// and writes it to the given writer. The number of bytes written is returned
 /// on success.
@@ -25,8 +27,8 @@ pub fn pack_uint_in<W: io::Write>(mut wtr: W, n: u64, nbytes: u8) -> io::Result<
 ///
 /// `nbytes` must be >= 1 and <= 8.
 #[inline(always)]
-pub fn unpack_uint(slice: &[u8], nbytes: u8) -> u64 {
-    LittleEndian::read_uint(slice, nbytes as usize)
+pub fn unpack_uint(slice: FakeArrRef<'_>, nbytes: u8) -> u64 {
+    LittleEndian::read_uint(&slice[0..nbytes as usize].actually_read_it(), nbytes as usize)
 }
 
 /// pack_size returns the smallest number of bytes that can encode `n`.

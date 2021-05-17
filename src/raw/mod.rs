@@ -18,15 +18,21 @@ option of specifying a merge strategy for output values.
 
 Most of the rest of the types are streams from set operations.
 */
-use std::fmt;
 use std::ops::Deref;
 use std::{cmp, mem};
+use std::{
+    fmt,
+    ops::{Index, Range, RangeFrom},
+};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::automaton::{AlwaysMatch, Automaton};
 use crate::error::Result;
 use crate::stream::{IntoStreamer, Streamer};
+use crate::{
+    automaton::{AlwaysMatch, Automaton},
+    fake_arr::{slice_to_fake_arr, FakeArr, FakeArrRef, EMPTY},
+};
 
 pub use self::build::Builder;
 pub use self::error::Error;
@@ -272,7 +278,10 @@ pub type CompiledAddr = usize;
 ///   (excellent for in depth overview)
 /// * [Comparison of Construction Algorithms for Minimal, Acyclic, Deterministic, Finite-State Automata from Sets of Strings](http://www.cs.mun.ca/~harold/Courses/Old/CS4750/Diary/q3p2qx4lv71m5vew.pdf)
 ///   (excellent for surface level overview)
-pub struct Fst<Data = Vec<u8>> {
+pub struct Fst<Data = Box<dyn FakeArr>>
+where
+    Data: Deref<Target = FakeArr>,
+{
     meta: FstMeta,
     data: Data,
 }
@@ -286,16 +295,16 @@ struct FstMeta {
 
 impl FstMeta {
     #[inline(always)]
-    fn root<'f>(&self, data: &'f [u8]) -> Node<'f> {
+    fn root<'f>(&self, data: FakeArrRef<'f>) -> Node<'f> {
         self.node(self.root_addr, data)
     }
 
     #[inline(always)]
-    fn node<'f>(&self, addr: CompiledAddr, data: &'f [u8]) -> Node<'f> {
+    fn node<'f>(&self, addr: CompiledAddr, data: FakeArrRef<'f>) -> Node<'f> {
         node_new(self.version, addr, data)
     }
 
-    fn empty_final_output(&self, data: &[u8]) -> Option<Output> {
+    fn empty_final_output(&self, data: FakeArrRef<'_>) -> Option<Output> {
         let root = self.root(data);
         if root.is_final() {
             Some(root.final_output())
@@ -305,9 +314,16 @@ impl FstMeta {
     }
 }
 
-impl<Data: Deref<Target = [u8]>> Fst<Data> {
+impl Fst<Box<dyn FakeArr>> {
+    pub fn new_box(data: Vec<u8>) -> Result<Fst<Box<dyn FakeArr>>> {
+        Fst::new(Box::new(data))
+    }
+}
+
+impl<Data: Deref<Target = FakeArr>> Fst<Data> {
     /// Open a `Fst` from a given data.
     pub fn new(data: Data) -> Result<Fst<Data>> {
+        // let data = data.into();
         if data.len() < 32 {
             return Err(Error::Format.into());
         }
@@ -316,7 +332,9 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
         // unexpected EOF. However, we are reading from a byte slice (no
         // IO errors possible) and we've confirmed the byte slice is at least
         // N bytes (no unexpected EOF).
-        let version = (&*data).read_u64::<LittleEndian>().unwrap();
+        let mut flonk = &data[0..];
+
+        let version = flonk.read_u64::<LittleEndian>().unwrap();
         if version == 0 || version > VERSION {
             return Err(Error::Version {
                 expected: VERSION,
@@ -324,7 +342,8 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
             }
             .into());
         }
-        let ty = (&data[8..]).read_u64::<LittleEndian>().unwrap();
+        let mut bonk = &data[8..];
+        let ty = bonk.read_u64::<LittleEndian>().unwrap();
         let root_addr = {
             let mut last = &data[data.len() - 8..];
             u64_to_usize(last.read_u64::<LittleEndian>().unwrap())
@@ -411,7 +430,7 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
     }
 
     fn stream_builder<A: Automaton>(&self, aut: A) -> StreamBuilder<A> {
-        StreamBuilder::new(&self.meta, &self.data, aut)
+        StreamBuilder::new(&self.meta, &*self.data, aut)
     }
 
     /// Return a builder for range queries.
@@ -464,8 +483,8 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
     /// with associated values.
     pub fn is_disjoint<'f, I, S>(&self, stream: I) -> bool
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         self.op().add(stream).intersection().next().is_none()
     }
@@ -477,8 +496,8 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
     /// with associated values.
     pub fn is_subset<'f, I, S>(&self, stream: I) -> bool
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         let mut op = self.op().add(stream).intersection();
         let mut count = 0;
@@ -495,8 +514,8 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
     /// with associated values.
     pub fn is_superset<'f, I, S>(&self, stream: I) -> bool
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         let mut op = self.op().add(stream).union();
         let mut count = 0;
@@ -541,9 +560,9 @@ impl<Data: Deref<Target = [u8]>> Fst<Data> {
 
 impl<'a, 'f, Data> IntoStreamer<'a> for &'f Fst<Data>
 where
-    Data: Deref<Target = [u8]>,
+    Data: Deref<Target = dyn FakeArr>,
 {
-    type Item = (&'a [u8], Output);
+    type Item = (FakeArrRef<'a>, Output);
     type Into = Stream<'f>;
 
     #[inline]
@@ -566,7 +585,7 @@ where
 /// The `'f` lifetime parameter refers to the lifetime of the underlying fst.
 pub struct StreamBuilder<'f, A = AlwaysMatch> {
     meta: &'f FstMeta,
-    data: &'f [u8],
+    data: FakeArrRef<'f>,
     aut: A,
     min: Bound,
     max: Bound,
@@ -574,7 +593,7 @@ pub struct StreamBuilder<'f, A = AlwaysMatch> {
 }
 
 impl<'f, A: Automaton> StreamBuilder<'f, A> {
-    fn new(meta: &'f FstMeta, data: &'f [u8], aut: A) -> Self {
+    fn new(meta: &'f FstMeta, data: FakeArrRef<'f>, aut: A) -> Self {
         StreamBuilder {
             meta,
             data,
@@ -623,7 +642,7 @@ impl<'f, A: Automaton> StreamBuilder<'f, A> {
 }
 
 impl<'a, 'f, A: Automaton> IntoStreamer<'a> for StreamBuilder<'f, A> {
-    type Item = (&'a [u8], Output);
+    type Item = (FakeArrRef<'a>, Output);
     type Into = Stream<'f, A>;
 
     fn into_stream(self) -> Stream<'f, A> {
@@ -657,7 +676,7 @@ impl<'a, 'f, A: 'a + Automaton> IntoStreamer<'a> for StreamWithStateBuilder<'f, 
 where
     A::State: Clone,
 {
-    type Item = (&'a [u8], Output, A::State);
+    type Item = (FakeArrRef<'a>, Output, A::State);
     type Into = StreamWithState<'f, A>;
 
     fn into_stream(self) -> StreamWithState<'f, A> {
@@ -720,7 +739,7 @@ where
 impl<'f, A: Automaton> Stream<'f, A> {
     fn new(
         meta: &'f FstMeta,
-        data: &'f [u8],
+        data: FakeArrRef<'f>,
         aut: A,
         min: Bound,
         max: Bound,
@@ -792,7 +811,7 @@ impl<'f, A: Automaton> Stream<'f, A> {
 }
 
 impl<'f, 'a, A: Automaton> Streamer<'a> for Stream<'f, A> {
-    type Item = (&'a [u8], Output);
+    type Item = (FakeArrRef<'a>, Output);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         self.0.next(|_| ()).map(|(key, out, _)| (key, out))
@@ -812,7 +831,7 @@ where
     A: Automaton,
 {
     fst: &'f FstMeta,
-    data: &'f [u8],
+    data: FakeArrRef<'f>,
     aut: A,
     inp: Buffer,
     empty_output: Option<Output>,
@@ -836,7 +855,7 @@ struct StreamState<'f, S> {
 impl<'f, A: Automaton> StreamWithState<'f, A> {
     fn new(
         fst: &'f FstMeta,
-        data: &'f [u8],
+        data: FakeArrRef<'f>,
         aut: A,
         min: Bound,
         max: Bound,
@@ -967,14 +986,14 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     }
 
     #[inline]
-    fn next<F, T>(&mut self, transform: F) -> Option<(&[u8], Output, T)>
+    fn next<'a, F, T>(&'a mut self, transform: F) -> Option<(FakeArrRef<'a>, Output, T)>
     where
         F: Fn(&A::State) -> T,
     {
         if !self.reversed {
             // Inorder empty output (will be first).
             if let Some(out) = self.empty_output.take() {
-                return Some((&[], out, transform(&self.aut.start())));
+                return Some((EMPTY, out, transform(&self.aut.start())));
             }
         }
         while let Some(state) = self.stack.pop() {
@@ -986,7 +1005,9 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                         let out_of_bounds =
                             self.min.subceeded_by(&self.inp) || self.max.exceeded_by(&self.inp);
                         if !out_of_bounds && self.aut.is_match(&state.aut_state) {
-                            return Some((&self.inp.pop(), state.out, transform(&state.aut_state)));
+                            let opli: &'a [u8] = self.inp.pop();
+                            let ar = slice_to_fake_arr(opli);
+                            return Some((ar, state.out, transform(&state.aut_state)));
                         }
                     }
                     self.inp.pop();
@@ -1029,7 +1050,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         // part of our fst, matches the range and the automaton
         self.empty_output
             .take()
-            .map(|out| (&[][..], out, transform(&self.aut.start())))
+            .map(|out| (EMPTY, out, transform(&self.aut.start())))
     }
 
     // The first transition that is in a bound for a given node.
@@ -1140,7 +1161,7 @@ impl<'f, 'a, A: 'a + Automaton> Streamer<'a> for StreamWithState<'f, A>
 where
     A::State: Clone,
 {
-    type Item = (&'a [u8], Output, A::State);
+    type Item = (FakeArrRef<'a>, Output, A::State);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         self.next(Clone::clone)
@@ -1163,10 +1184,24 @@ where
 #[derive(Copy, Clone, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Output(u64);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Buffer {
     buf: Box<[u8]>,
     len: usize,
+}
+
+impl FakeArr for Buffer {
+    fn len(&self) -> usize {
+        todo!()
+    }
+
+    fn actually_read_it(&self) -> Vec<u8> {
+        todo!()
+    }
+
+    fn read_into(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        todo!()
+    }
 }
 
 impl Buffer {

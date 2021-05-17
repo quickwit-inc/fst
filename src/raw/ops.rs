@@ -2,11 +2,11 @@ use std::cmp;
 use std::collections::BinaryHeap;
 use std::iter::FromIterator;
 
-use crate::raw::Output;
+use crate::{fake_arr::{FakeArr, FakeArrRef, slice_to_fake_arr}, raw::Output};
 use crate::stream::{IntoStreamer, Streamer};
 
 /// Permits stream operations to be hetergeneous with respect to streams.
-type BoxedStream<'f> = Box<dyn for<'a> Streamer<'a, Item = (&'a [u8], Output)> + 'f>;
+type BoxedStream<'f> = Box<dyn for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)> + 'f>;
 
 /// A value indexed by a stream.
 ///
@@ -60,8 +60,8 @@ impl<'f> OpBuilder<'f> {
     /// pairs.
     pub fn add<I, S>(mut self, stream: I) -> Self
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         self.push(stream);
         self
@@ -73,8 +73,8 @@ impl<'f> OpBuilder<'f> {
     /// pairs.
     pub fn push<I, S>(&mut self, stream: I)
     where
-        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         self.streams.push(Box::new(stream.into_stream()));
     }
@@ -165,8 +165,8 @@ impl<'f> OpBuilder<'f> {
 
 impl<'f, I, S> Extend<I> for OpBuilder<'f>
 where
-    I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-    S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+    I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+    S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
 {
     fn extend<T>(&mut self, it: T)
     where
@@ -180,8 +180,8 @@ where
 
 impl<'f, I, S> FromIterator<I> for OpBuilder<'f>
 where
-    I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
-    S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+    I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
+    S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
 {
     fn from_iter<T>(it: T) -> Self
     where
@@ -203,7 +203,7 @@ pub struct Union<'f> {
 }
 
 impl<'a, 'f> Streamer<'a> for Union<'f> {
-    type Item = (&'a [u8], &'a [IndexedValue]);
+    type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         if let Some(slot) = self.cur_slot.take() {
@@ -222,7 +222,7 @@ impl<'a, 'f> Streamer<'a> for Union<'f> {
             self.outs.push(slot2.indexed_value());
             self.heap.refill(slot2);
         }
-        Some((slot.input(), &self.outs))
+        Some((slice_to_fake_arr(slot.input()), &self.outs))
     }
 }
 
@@ -237,7 +237,7 @@ pub struct Intersection<'f> {
 }
 
 impl<'a, 'f> Streamer<'a> for Intersection<'f> {
-    type Item = (&'a [u8], &'a [IndexedValue]);
+    type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
     fn next(&'a mut self) -> Option<Self::Item> {
         if let Some(slot) = self.cur_slot.take() {
@@ -261,7 +261,7 @@ impl<'a, 'f> Streamer<'a> for Intersection<'f> {
             } else {
                 self.cur_slot = Some(slot);
                 let key = self.cur_slot.as_ref().unwrap().input();
-                return Some((key, &self.outs));
+                return Some((slice_to_fake_arr(key), &self.outs));
             }
         }
     }
@@ -291,7 +291,7 @@ impl<'a, 'f> Streamer<'a> for Difference<'f> {
                 None => return None,
                 Some((key, out)) => {
                     self.key.clear();
-                    self.key.extend(key);
+                    self.key.extend(key.actually_read_it());
                     self.outs.clear();
                     self.outs.push(IndexedValue {
                         index: 0,
@@ -403,7 +403,7 @@ impl<'f> StreamHeap<'f> {
 
     fn refill(&mut self, mut slot: Slot) {
         if let Some((input, output)) = self.rdrs[slot.idx].next() {
-            slot.set_input(input);
+            slot.set_input(&input.actually_read_it());
             slot.set_output(output);
             self.heap.push(slot);
         }
