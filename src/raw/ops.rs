@@ -466,7 +466,7 @@ mod tests {
     use crate::raw::tests::{fst_map, fst_set};
     use crate::raw::Fst;
     use crate::stream::{IntoStreamer, Streamer};
-
+    use crate::fake_arr::FakeArr;
     use super::OpBuilder;
 
     fn s(string: &str) -> String {

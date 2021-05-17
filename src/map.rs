@@ -53,7 +53,7 @@ use std::ops::Deref;
 /// Keys will always be byte strings; however, we may grow more conveniences
 /// around dealing with them (such as a serialization/deserialization step,
 /// although it isn't clear where exactly this should live).
-pub struct Map<Data: Deref<Target = dyn FakeArr>>(raw::Fst<Data>);
+pub struct Map<Data: Deref<Target = dyn FakeArr> = Box<dyn FakeArr>>(raw::Fst<Data>);
 
 impl<Data: Deref<Target = dyn FakeArr>> Map<Data> {
     /// Tests the membership of a single key.

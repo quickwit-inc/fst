@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use byteorder::WriteBytesExt;
 
-use crate::{fake_arr::{EMPTY, FakeArr, FakeArrRef}, raw::build::BuilderNode};
+use crate::{fake_arr::{empty, FakeArr, FakeArrRef}, raw::build::BuilderNode, slic, slic2};
 use crate::raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
 use crate::raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
 use crate::raw::{u64_to_usize, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
@@ -60,7 +60,7 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
     let state = State::new(data, addr);
     match state {
         EmptyFinal => Node {
-            data: EMPTY,
+            data: empty(),
             version,
             state: State::EmptyFinal,
             start: EMPTY_ADDRESS,
@@ -71,7 +71,7 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
             final_output: Output::zero(),
         },
         OneTransNext(s) => {
-            let data = &data[..=addr];
+            let data = slic2!(data[..=addr]);
             Node {
                 data,
                 version,
@@ -85,7 +85,7 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
             }
         }
         OneTrans(s) => {
-            let data = &data[..=addr];
+            let data = slic2!(data[..=addr]);
             let sizes = s.sizes(data);
             Node {
                 data,
@@ -100,7 +100,7 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
             }
         }
         AnyTrans(s) => {
-            let data = &data[..=addr];
+            let data = slic2!(data[..=addr]);
             let sizes = s.sizes(data);
             let ntrans = s.ntrans(data);
             Node {
@@ -230,7 +230,7 @@ impl<'f> Node<'f> {
     #[doc(hidden)]
     #[inline(always)]
     pub fn as_slice(&self) -> Vec<u8> {
-        self.data[self.end..].to_vec()
+        slic!(self.data[(self.end)..]).to_vec()
     }
 
     #[doc(hidden)]
@@ -300,7 +300,7 @@ impl State {
         if addr == EMPTY_ADDRESS {
             return EmptyFinal;
         }
-        let v = data[addr];
+        let v = slic!(data[addr]);
         match (v & 0b11_000000) >> 6 {
             0b11 => OneTransNext(StateOneTransNext(v)),
             0b10 => OneTrans(StateOneTrans(v)),
@@ -352,7 +352,7 @@ impl StateOneTransNext {
         if let Some(inp) = self.common_input() {
             inp
         } else {
-            node.data[node.start - 1]
+            slic!(node.data[(node.start - 1)])
         }
     }
 
@@ -410,7 +410,7 @@ impl StateOneTrans {
     #[inline(always)]
     fn sizes(self, data: FakeArrRef) -> PackSizes {
         let i = data.len() - 1 - self.input_len() - 1;
-        PackSizes::decode(data[i])
+        PackSizes::decode(slic!(data[i]))
     }
 
     #[inline(always)]
@@ -427,7 +427,7 @@ impl StateOneTrans {
         if let Some(inp) = self.common_input() {
             inp
         } else {
-            node.data[node.start - 1]
+            slic!(node.data[(node.start - 1)])
         }
     }
 
@@ -442,7 +442,7 @@ impl StateOneTrans {
                 - self.input_len()
                 - 1 // pack size
                 - tsize - osize;
-        Output::new(unpack_uint(&node.data[i..], osize as u8))
+        Output::new(unpack_uint(slic!(node.data[i..]), osize as u8))
     }
 
     #[inline(always)]
@@ -452,7 +452,7 @@ impl StateOneTrans {
                 - self.input_len()
                 - 1 // pack size
                 - tsize;
-        unpack_delta(&node.data[i..], tsize, node.end)
+        unpack_delta(slic!(node.data[i..]), tsize, node.end)
     }
 }
 
@@ -556,7 +556,7 @@ impl StateAnyTrans {
     #[inline(always)]
     fn sizes(self, data: FakeArrRef) -> PackSizes {
         let i = data.len() - 1 - self.ntrans_len() - 1;
-        PackSizes::decode(data[i])
+        PackSizes::decode(slic!(data[i]))
     }
 
     #[inline(always)]
@@ -588,7 +588,7 @@ impl StateAnyTrans {
         if let Some(n) = self.state_ntrans() {
             n as usize
         } else {
-            let n = data[data.len() - 2] as usize;
+            let n = slic!(data[(data.len() - 2)]) as usize;
             if n == 1 {
                 // "1" is never a normal legal value here, because if there
                 // is only 1 transition, then it is encoded in the state byte.
@@ -611,7 +611,7 @@ impl StateAnyTrans {
                  - self.total_trans_size(version, sizes, ntrans)
                  - (ntrans * osize) // output values
                  - osize; // the desired output value
-        Output::new(unpack_uint(&data[at..], osize as u8))
+        Output::new(unpack_uint(slic!(data[at..]), osize as u8))
     }
 
     #[inline(always)]
@@ -637,7 +637,7 @@ impl StateAnyTrans {
                  - node.ntrans // inputs
                  - (i * tsize) // the previous transition addresses
                  - tsize; // the desired transition address
-        unpack_delta(&node.data[at..], tsize, node.end)
+        unpack_delta(slic!(node.data[at..]), tsize, node.end)
     }
 
     #[inline(always)]
@@ -648,7 +648,7 @@ impl StateAnyTrans {
                  - self.trans_index_size(node.version, node.ntrans)
                  - i
                  - 1; // the input byte
-        node.data[at]
+        slic!(node.data[at])
     }
 
     #[inline(always)]
@@ -658,7 +658,7 @@ impl StateAnyTrans {
                         - self.ntrans_len()
                         - 1 // pack size
                         - self.trans_index_size(node.version, node.ntrans);
-            let i = node.data[start + b as usize] as usize;
+            let i = node.data.get_byte((start + b as usize).into()) as usize;
             if i >= node.ntrans {
                 None
             } else {
@@ -670,9 +670,9 @@ impl StateAnyTrans {
                         - 1 // pack size
                         - node.ntrans; // inputs
             let end = start + node.ntrans;
-            let inputs = &node.data[start..end];
+            let inputs = slic!(node.data[start..end]);
             for i in 0..inputs.len() {
-                if inputs[i] == b {
+                if inputs.get_byte(i) == b {
                     return Some(node.ntrans - i - 1);
                 }
             }
@@ -692,7 +692,7 @@ impl StateAnyTrans {
                  - self.total_trans_size(node.version, node.sizes, node.ntrans)
                  - (i * osize) // the previous outputs
                  - osize; // the desired output value
-        Output::new(unpack_uint(&node.data[at..], osize as u8))
+        Output::new(unpack_uint(slic!(node.data[at..]), osize as u8))
     }
 }
 
@@ -839,7 +839,7 @@ fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: usize, node_addr: usize)
 mod tests {
     use quickcheck::{quickcheck, TestResult};
 
-    use crate::raw::build::BuilderNode;
+    use crate::{fake_arr::{FakeArr, slice_to_fake_arr}, raw::build::BuilderNode};
     use crate::raw::node::{node_new, Node};
     use crate::raw::{Builder, CompiledAddr, Fst, Output, Transition, VERSION};
     use crate::stream::Streamer;
@@ -888,7 +888,7 @@ mod tests {
 
     fn roundtrip(bnode: &BuilderNode) -> bool {
         let (addr, bytes) = compile(bnode);
-        let node = node_new(VERSION, addr, &bytes);
+        let node = node_new(VERSION, addr, slice_to_fake_arr(&bytes));
         nodes_equal(&node, &bnode)
     }
 
@@ -908,7 +908,7 @@ mod tests {
             trans: vec![],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, &buf);
+        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
         assert_eq!(node.as_slice().len(), 3);
         roundtrip(&bnode);
     }
@@ -921,7 +921,7 @@ mod tests {
             trans: vec![trans(20, b'a')],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, &buf);
+        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
         assert_eq!(node.as_slice().len(), 3);
         roundtrip(&bnode);
     }
@@ -934,7 +934,7 @@ mod tests {
             trans: vec![trans(2, b'\xff')],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, &buf);
+        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
         assert_eq!(node.as_slice().len(), 4);
         roundtrip(&bnode);
     }
@@ -954,7 +954,7 @@ mod tests {
             ],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, &buf);
+        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
         assert_eq!(node.as_slice().len(), 14);
         roundtrip(&bnode);
     }
@@ -967,7 +967,7 @@ mod tests {
             trans: (0..256).map(|i| trans(0, i as u8)).collect(),
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, &buf);
+        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
         assert_eq!(node.transitions().count(), 256);
         assert_eq!(node.len(), node.transitions().count());
         roundtrip(&bnode);

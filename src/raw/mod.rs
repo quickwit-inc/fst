@@ -18,20 +18,23 @@ option of specifying a merge strategy for output values.
 
 Most of the rest of the types are streams from set operations.
 */
-use std::ops::Deref;
 use std::{cmp, mem};
 use std::{
     fmt,
     ops::{Index, Range, RangeFrom},
 };
+use std::{io::Read, ops::Deref};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::error::Result;
-use crate::stream::{IntoStreamer, Streamer};
 use crate::{
     automaton::{AlwaysMatch, Automaton},
-    fake_arr::{slice_to_fake_arr, FakeArr, FakeArrRef, EMPTY},
+    fake_arr::{empty, slice_to_fake_arr, FakeArr, FakeArrRef},
+};
+use crate::{error::Result, slic};
+use crate::{
+    fake_arr::{full_slice, FakeArrPart, ShRange},
+    stream::{IntoStreamer, Streamer},
 };
 
 pub use self::build::Builder;
@@ -332,7 +335,7 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
         // unexpected EOF. However, we are reading from a byte slice (no
         // IO errors possible) and we've confirmed the byte slice is at least
         // N bytes (no unexpected EOF).
-        let mut flonk = &data[0..];
+        let mut flonk = &slic!(data[0..]) as &dyn FakeArr;
 
         let version = flonk.read_u64::<LittleEndian>().unwrap();
         if version == 0 || version > VERSION {
@@ -342,14 +345,14 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
             }
             .into());
         }
-        let mut bonk = &data[8..];
+        let mut bonk = &slic!(data[8..]) as &dyn FakeArr;
         let ty = bonk.read_u64::<LittleEndian>().unwrap();
         let root_addr = {
-            let mut last = &data[data.len() - 8..];
+            let mut last = &slic!(data[(data.len() - 8)..]) as &dyn FakeArr;
             u64_to_usize(last.read_u64::<LittleEndian>().unwrap())
         };
         let len = {
-            let mut last2 = &data[data.len() - 16..];
+            let mut last2 = &slic!(data[(data.len() - 16)..]) as &dyn FakeArr;
             u64_to_usize(last2.read_u64::<LittleEndian>().unwrap())
         };
         // The root node is always the last node written, so its address should
@@ -430,7 +433,7 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
     }
 
     fn stream_builder<A: Automaton>(&self, aut: A) -> StreamBuilder<A> {
-        StreamBuilder::new(&self.meta, &*self.data, aut)
+        StreamBuilder::new(&self.meta, slic!(self.data[..]), aut)
     }
 
     /// Return a builder for range queries.
@@ -540,7 +543,7 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
     /// Returns the root node of this fst.
     #[inline(always)]
     pub fn root(&self) -> Node {
-        self.meta.root(self.data.deref())
+        self.meta.root(slic!(self.data[..]))
     }
 
     /// Returns the node at the given address.
@@ -548,7 +551,7 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
     /// Node addresses can be obtained by reading transitions on `Node` values.
     #[inline]
     pub fn node(&self, addr: CompiledAddr) -> Node {
-        self.meta.node(addr, self.data.deref())
+        self.meta.node(addr, slic!(self.data[..]))
     }
 
     /// Returns a copy of the binary contents of this FST.
@@ -990,10 +993,11 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     where
         F: Fn(&A::State) -> T,
     {
+        println!("next()");
         if !self.reversed {
             // Inorder empty output (will be first).
             if let Some(out) = self.empty_output.take() {
-                return Some((EMPTY, out, transform(&self.aut.start())));
+                return Some((empty(), out, transform(&self.aut.start())));
             }
         }
         while let Some(state) = self.stack.pop() {
@@ -1042,7 +1046,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     self.stack.clear();
                     return None;
                 } else if !self.reversed && next_node.is_final() && is_match {
-                    return Some((&self.inp, out.cat(next_node.final_output()), ns));
+                    return Some((slic!(self.inp[..]), out.cat(next_node.final_output()), ns));
                 }
             }
         }
@@ -1050,7 +1054,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         // part of our fst, matches the range and the automaton
         self.empty_output
             .take()
-            .map(|out| (EMPTY, out, transform(&self.aut.start())))
+            .map(|out| (empty(), out, transform(&self.aut.start())))
     }
 
     // The first transition that is in a bound for a given node.
@@ -1192,16 +1196,33 @@ struct Buffer {
 
 impl FakeArr for Buffer {
     fn len(&self) -> usize {
-        todo!()
+        self.len
     }
 
-    fn actually_read_it(&self) -> Vec<u8> {
-        todo!()
+    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<()> {
+        buf.copy_from_slice(&self.buf[offset..offset + buf.len()]);
+        Ok(())
     }
 
-    fn read_into(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        todo!()
+    fn get_byte(&self, offset: usize) -> u8 {
+        self.buf[offset]
     }
+
+    fn slice<'a>(&'a self, b: ShRange<usize>) -> FakeArrPart<'a> {
+        let x = full_slice(self);
+        x.slice2(b)
+    }
+
+    fn as_dyn(&self) -> &dyn FakeArr {
+        self
+    }
+
+    /*fn slice(&self, range: ShRange<usize>) -> FakeArrPart<'_> {
+        // implement generally in trait itself
+        FakeArrPart {
+
+        }
+    }*/
 }
 
 impl Buffer {

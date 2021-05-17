@@ -1,10 +1,11 @@
-use crate::{automaton::AlwaysMatch, fake_arr::FakeArr};
+use crate::{automaton::AlwaysMatch, fake_arr::{FakeArr, FakeArrRef}};
 use crate::error::Error;
 use crate::inner_automaton::Automaton;
 use crate::raw::{self, Bound, Buffer, Builder, Fst, Output, Stream, VERSION};
 use crate::stream::Streamer;
 use crate::{IntoStreamer, Regex};
 use std::ops::Deref;
+use crate::slic;
 
 const TEXT: &'static str = include_str!("./../../data/words-100000");
 
@@ -86,7 +87,7 @@ macro_rules! test_set {
             for item in &items {
                 assert_eq!(&rdr.next().unwrap().0.to_vec()[..], item.as_bytes());
             }
-            assert_eq!(rdr.next(), None);
+            assert_eq!(rdr.next().map(to_mem), None);
             for item in &items {
                 assert!(fst.get(item).is_some());
             }
@@ -141,7 +142,7 @@ macro_rules! test_map {
                 let (s, o) = rdr.next().unwrap();
                 assert_eq!((&s.to_vec()[..], o.value()), ($s.as_bytes(), $o));
             })*
-            assert_eq!(rdr.next(), None);
+            assert_eq!(rdr.next().map(to_mem), None);
             $({
                 assert_eq!(fst.get($s.as_bytes()), Some(Output::new($o)));
             })*
@@ -255,7 +256,7 @@ fn invalid_format() {
 fn fst_set_zero() {
     let fst = fst_set::<_, String>(vec![]);
     let mut rdr = fst.stream();
-    assert_eq!(rdr.next(), None);
+    assert_eq!(rdr.next().map(to_mem), None);
 }
 
 macro_rules! test_range {
@@ -275,26 +276,26 @@ macro_rules! test_range {
                      .map(|(i, k)| (k, i as u64)).collect();
             let fst: Fst = fst_map(items.clone()).into();
             {
-                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max, false);
+                let mut rdr = Stream::new(&fst.meta, fst.data.full_slice(), AlwaysMatch, $min, $max, false);
                 for i in $imin..$imax {
                     assert_eq!(to_mem(rdr.next().unwrap()),
                                (items[i].0.as_bytes().to_vec(), Output::new(items[i].1)));
                 }
-                assert_eq!(rdr.next(), None);
+                assert_eq!(rdr.next().map(to_mem), None);
             }
             {
-                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), AlwaysMatch, $min, $max, true);
+                let mut rdr = Stream::new(&fst.meta, fst.data.full_slice(), AlwaysMatch, $min, $max, true);
                 for i in ($imin..$imax).rev() {
                     assert_eq!(to_mem(rdr.next().unwrap()),
                                (items[i].0.as_bytes().to_vec(), Output::new(items[i].1)));
                 }
-                assert_eq!(rdr.next(), None);
+                assert_eq!(rdr.next().map(to_mem), None);
             }
         }
     }
 }
 
-fn to_mem(v: (&dyn FakeArr, raw::Output)) -> (Vec<u8>, raw::Output) {
+fn to_mem(v: (FakeArrRef<'_>, raw::Output)) -> (Vec<u8>, raw::Output) {
     (v.0.to_vec(), v.1)
 }
 /*fn flonk() {
@@ -661,7 +662,7 @@ fn test_return_node_on_reverse_only_if_match() {
     let automaton = Regex::new("ab").unwrap();
     let mut stream = fst.search(automaton).backward().into_stream();
     assert_eq!(stream.next().map(to_mem), Some((b"ab"[..].to_vec(), Output::new(1u64))));
-    assert_eq!(stream.next(), None);
+    assert_eq!(stream.next().map(to_mem), None);
 }
 
 #[test]
@@ -777,7 +778,7 @@ where
         // test forward
         let mut stream = Stream::new(
             &fst.meta,
-            fst.data.deref(),
+            fst.data.full_slice(),
             &aut,
             min.clone(),
             max.clone(),
@@ -795,7 +796,7 @@ where
     }
     {
         // test backward
-        let mut stream = Stream::new(&fst.meta, fst.data.deref(), &aut, min, max, true);
+        let mut stream = Stream::new(&fst.meta, fst.data.full_slice(), &aut, min, max, true);
         for &(exp_k, exp_v) in expected_items.iter().rev() {
             if let Some((k, v)) = stream.next() {
                 assert_eq!(&k.to_vec(), exp_k.as_bytes());
@@ -815,7 +816,7 @@ fn test_simple() {
     let a = Regex::new("").unwrap();
     let mut stream = Stream::new(
         &fst.meta,
-        fst.data.deref(),
+        fst.data.full_slice(),
         &a,
         Bound::Unbounded,
         Bound::Included(b"a".to_vec()),
@@ -950,24 +951,24 @@ macro_rules! test_range_with_aut {
                 .collect();
             let fst: Fst = fst_map(items.clone()).into();
             {
-                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), $aut, $min, $max, false);
+                let mut rdr = Stream::new(&fst.meta, fst.data.full_slice(), $aut, $min, $max, false);
                 for i in $imin..$imax {
                     assert_eq!(
                         to_mem(rdr.next().unwrap()),
                         (output[i].0.as_bytes().to_vec(), Output::new(output[i].1))
                     );
                 }
-                assert_eq!(rdr.next(), None);
+                assert_eq!(rdr.next().map(to_mem), None);
             }
             {
-                let mut rdr = Stream::new(&fst.meta, fst.data.deref(), $aut, $min, $max, true);
+                let mut rdr = Stream::new(&fst.meta, slic!(fst.data[..]), $aut, $min, $max, true);
                 for i in ($imin..$imax).rev() {
                     assert_eq!(
                         to_mem(rdr.next().unwrap()),
                         (output[i].0.as_bytes().to_vec(), Output::new(output[i].1))
                     );
                 }
-                assert_eq!(rdr.next(), None);
+                assert_eq!(rdr.next().map(to_mem), None);
             }
         }
     };

@@ -9,6 +9,7 @@ use crate::raw::registry::{Registry, RegistryEntry};
 use crate::raw::{CompiledAddr, FstType, Output, Transition, EMPTY_ADDRESS, NONE_ADDRESS, VERSION};
 // use raw::registry_minimal::{Registry, RegistryEntry};
 use crate::stream::{IntoStreamer, Streamer};
+use crate::fake_arr::FakeArr;
 
 /// A builder for creating a finite state transducer.
 ///

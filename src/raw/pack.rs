@@ -2,7 +2,10 @@ use std::io;
 
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
-use crate::fake_arr::FakeArrRef;
+use crate::{
+    fake_arr::{FakeArr, FakeArrRef},
+    slic,
+};
 
 /// pack_uint packs the given integer in the smallest number of bytes possible,
 /// and writes it to the given writer. The number of bytes written is returned
@@ -28,7 +31,10 @@ pub fn pack_uint_in<W: io::Write>(mut wtr: W, n: u64, nbytes: u8) -> io::Result<
 /// `nbytes` must be >= 1 and <= 8.
 #[inline(always)]
 pub fn unpack_uint(slice: FakeArrRef<'_>, nbytes: u8) -> u64 {
-    LittleEndian::read_uint(&slice[0..nbytes as usize].actually_read_it(), nbytes as usize)
+    LittleEndian::read_uint(
+        &slic!(slice[0..(nbytes as usize)]).actually_read_it(),
+        nbytes as usize,
+    )
 }
 
 /// pack_size returns the smallest number of bytes that can encode `n`.
@@ -54,6 +60,8 @@ pub fn pack_size(n: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use crate::fake_arr::slice_to_fake_arr;
+
     use super::*;
     use quickcheck::{QuickCheck, StdGen};
     use std::io;
@@ -64,7 +72,7 @@ mod tests {
             let mut buf = io::Cursor::new(vec![]);
             let size = pack_uint(&mut buf, num).unwrap();
             buf.set_position(0);
-            num == unpack_uint(buf.get_ref(), size)
+            num == unpack_uint(slice_to_fake_arr(buf.get_ref()), size)
         }
         QuickCheck::new()
             .gen(StdGen::new(::rand::thread_rng(), 257)) // pick byte boundary
