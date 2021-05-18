@@ -45,7 +45,9 @@ pub trait FakeArr: Debug {
     fn full_slice(&self) -> FakeArrPart<'_> {
         self.slice((..).into())
     }
-    fn get_byte(&self, offset: usize) -> u8;
+    fn get_byte(&self, offset: usize) -> u8 {
+        self.slice((offset..offset + 1).into()).actually_read_it()[0]
+    }
     fn actually_read_it(&self) -> Vec<u8> {
         let mut v = vec![0; self.len()];
         self.read_into(0, &mut v).unwrap();
@@ -156,9 +158,9 @@ impl<'a> FakeArr for FakeArrPart<'a> {
         self.real.as_dyn().read_into(self.offset + offset, buf)
     }
 
-    fn get_byte(&self, offset: usize) -> u8 {
+    /*fn get_byte(&self, offset: usize) -> u8 {
         self.real.as_dyn().get_byte(self.offset + offset)
-    }
+    }*/
 
     fn slice(&self, b: ShRange<usize>) -> FakeArrPart<'a> {
         self.slice2(b)
@@ -231,9 +233,9 @@ impl FakeArr for Vec<u8> {
         Ok(())
     }
 
-    fn get_byte(&self, offset: usize) -> u8 {
+    /*fn get_byte(&self, offset: usize) -> u8 {
         self[offset]
-    }
+    }*/
 
     fn as_dyn(&self) -> &dyn FakeArr {
         self
@@ -250,9 +252,9 @@ impl FakeArr for &[u8] {
         Ok(())
     }
 
-    fn get_byte(&self, offset: usize) -> u8 {
+    /*fn get_byte(&self, offset: usize) -> u8 {
         self[offset]
-    }
+    }*/
 
     /*fn slice(&self, bounds: ShRange<usize>) -> FakeArrPart<'_> {
         let (start, len) = self.get_ofs_len(bounds.0, bounds.1);

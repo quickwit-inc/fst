@@ -53,9 +53,9 @@ use std::ops::Deref;
 /// Keys will always be byte strings; however, we may grow more conveniences
 /// around dealing with them (such as a serialization/deserialization step,
 /// although it isn't clear where exactly this should live).
-pub struct Map<Data: Deref<Target = dyn FakeArr> = Box<dyn FakeArr>>(raw::Fst<Data>);
+pub struct Map<Data: FakeArr>(raw::Fst<Data>);
 
-impl<Data: Deref<Target = dyn FakeArr>> Map<Data> {
+impl<Data: FakeArr> Map<Data> {
     /// Tests the membership of a single key.
     ///
     /// # Example
@@ -323,7 +323,7 @@ impl<Data: Deref<Target = dyn FakeArr>> Map<Data> {
     }
 }
 
-impl<Data: Deref<Target=dyn FakeArr>> fmt::Debug for Map<Data> {
+impl<Data: FakeArr> fmt::Debug for Map<Data> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Map([")?;
         let mut stream = self.stream();
@@ -340,7 +340,7 @@ impl<Data: Deref<Target=dyn FakeArr>> fmt::Debug for Map<Data> {
 }
 
 // Construct a map from an Fst object.
-impl<Data: Deref<Target=dyn FakeArr>> From<raw::Fst<Data>> for Map<Data> {
+impl<Data: FakeArr> From<raw::Fst<Data>> for Map<Data> {
     #[inline]
     fn from(fst: raw::Fst<Data>) -> Self {
         Map(fst)
@@ -348,14 +348,14 @@ impl<Data: Deref<Target=dyn FakeArr>> From<raw::Fst<Data>> for Map<Data> {
 }
 
 /// Returns the underlying finite state transducer.
-impl<Data: Deref<Target=dyn FakeArr>> AsRef<raw::Fst<Data>> for Map<Data> {
+impl<Data: FakeArr> AsRef<raw::Fst<Data>> for Map<Data> {
     #[inline]
     fn as_ref(&self) -> &raw::Fst<Data> {
         &self.0
     }
 }
 
-impl<'m, 'a, Data: Deref<Target = dyn FakeArr>> IntoStreamer<'a> for &'m Map<Data> {
+impl<'m, 'a, Data: FakeArr> IntoStreamer<'a> for &'m Map<Data> {
     type Item = (FakeArrRef<'a>, u64);
     type Into = Stream<'m>;
 

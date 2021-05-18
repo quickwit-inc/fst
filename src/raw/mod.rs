@@ -281,9 +281,7 @@ pub type CompiledAddr = usize;
 ///   (excellent for in depth overview)
 /// * [Comparison of Construction Algorithms for Minimal, Acyclic, Deterministic, Finite-State Automata from Sets of Strings](http://www.cs.mun.ca/~harold/Courses/Old/CS4750/Diary/q3p2qx4lv71m5vew.pdf)
 ///   (excellent for surface level overview)
-pub struct Fst<Data = Box<dyn FakeArr>>
-where
-    Data: Deref<Target = FakeArr>,
+pub struct Fst<Data: FakeArr = Vec<u8>>
 {
     meta: FstMeta,
     data: Data,
@@ -317,13 +315,7 @@ impl FstMeta {
     }
 }
 
-impl Fst<Box<dyn FakeArr>> {
-    pub fn new_box(data: Vec<u8>) -> Result<Fst<Box<dyn FakeArr>>> {
-        Fst::new(Box::new(data))
-    }
-}
-
-impl<Data: Deref<Target = FakeArr>> Fst<Data> {
+impl<Data: FakeArr> Fst<Data> {
     /// Open a `Fst` from a given data.
     pub fn new(data: Data) -> Result<Fst<Data>> {
         // let data = data.into();
@@ -349,12 +341,14 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
         let ty = bonk.read_u64::<LittleEndian>().unwrap();
         let root_addr = {
             let mut last = &slic!(data[(data.len() - 8)..]) as &dyn FakeArr;
+            println!("len={}, d={:#?}, data={:?}, full={:#?}", data.len(), last, last.to_vec(), data.to_vec());
             u64_to_usize(last.read_u64::<LittleEndian>().unwrap())
         };
         let len = {
             let mut last2 = &slic!(data[(data.len() - 16)..]) as &dyn FakeArr;
             u64_to_usize(last2.read_u64::<LittleEndian>().unwrap())
         };
+        println!("root={}, len={}", root_addr, len);
         // The root node is always the last node written, so its address should
         // be near the end. After the root node is written, we still have to
         // write the root *address* and the number of keys in the FST.
@@ -563,7 +557,7 @@ impl<Data: Deref<Target = FakeArr>> Fst<Data> {
 
 impl<'a, 'f, Data> IntoStreamer<'a> for &'f Fst<Data>
 where
-    Data: Deref<Target = dyn FakeArr>,
+    Data: FakeArr,
 {
     type Item = (FakeArrRef<'a>, Output);
     type Into = Stream<'f>;
