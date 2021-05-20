@@ -658,7 +658,7 @@ impl StateAnyTrans {
                         - self.ntrans_len()
                         - 1 // pack size
                         - self.trans_index_size(node.version, node.ntrans);
-            let i = node.data.get_byte((start + b as usize).into()) as usize;
+            let i = node.data.get_byte((start + b as usize)) as usize;
             if i >= node.ntrans {
                 None
             } else {

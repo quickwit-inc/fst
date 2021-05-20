@@ -17,7 +17,7 @@ mod regex;
 mod fake_arr;
 
 pub use self::regex::Regex;
-pub use fake_arr::{FakeArr, ShRange, FakeArrPart};
+pub use fake_arr::{FakeArr, ShRange, FakeArrSlice};
 
 mod error;
 #[path = "automaton/mod.rs"]

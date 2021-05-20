@@ -33,7 +33,7 @@ use crate::{
 };
 use crate::{error::Result, slic};
 use crate::{
-    fake_arr::{full_slice, FakeArrPart, ShRange},
+    fake_arr::{full_slice, FakeArrSlice, ShRange},
     stream::{IntoStreamer, Streamer},
 };
 
@@ -327,7 +327,7 @@ impl<Data: FakeArr> Fst<Data> {
         // unexpected EOF. However, we are reading from a byte slice (no
         // IO errors possible) and we've confirmed the byte slice is at least
         // N bytes (no unexpected EOF).
-        let mut flonk = &slic!(data[0..]) as &dyn FakeArr;
+        let mut flonk = slic!(data[0..]);
 
         let version = flonk.read_u64::<LittleEndian>().unwrap();
         if version == 0 || version > VERSION {
@@ -337,15 +337,15 @@ impl<Data: FakeArr> Fst<Data> {
             }
             .into());
         }
-        let mut bonk = &slic!(data[8..]) as &dyn FakeArr;
+        let mut bonk = slic!(data[8..]);
         let ty = bonk.read_u64::<LittleEndian>().unwrap();
         let root_addr = {
-            let mut last = &slic!(data[(data.len() - 8)..]) as &dyn FakeArr;
-            println!("len={}, d={:#?}, data={:?}, full={:#?}", data.len(), last, last.to_vec(), data.to_vec());
+            let mut last = slic!(data[(data.len() - 8)..]);
+            // println!("len={}, d={:#?}, data={:?}, full={:#?}", data.len(), last, last.to_vec(), data.to_vec());
             u64_to_usize(last.read_u64::<LittleEndian>().unwrap())
         };
         let len = {
-            let mut last2 = &slic!(data[(data.len() - 16)..]) as &dyn FakeArr;
+            let mut last2 = slic!(data[(data.len() - 16)..]);
             u64_to_usize(last2.read_u64::<LittleEndian>().unwrap())
         };
         println!("root={}, len={}", root_addr, len);
@@ -1202,7 +1202,7 @@ impl FakeArr for Buffer {
         self.buf[offset]
     }
 
-    fn slice<'a>(&'a self, b: ShRange<usize>) -> FakeArrPart<'a> {
+    fn slice<'a>(&'a self, b: ShRange<usize>) -> FakeArrSlice<'a> {
         let x = full_slice(self);
         x.slice2(b)
     }

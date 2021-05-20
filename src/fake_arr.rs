@@ -7,17 +7,21 @@ use std::{
     ops::{Index, Range, RangeFrom, RangeFull, RangeToInclusive},
 };
 
-pub fn full_slice(b: &dyn FakeArr) -> FakeArrPart<'_> {
-    return FakeArrPart {
-        real: Fuckyou::Dyn(b),
+type ulen = u64; // maybe changeable? shouldn't be usize since then we couldn't use an index > 2GB in webassembly
+
+pub fn full_slice(b: &dyn FakeArr) -> FakeArrSlice<'_> {
+    return FakeArrSlice {
+        real: Wtfisthis::Dyn(b),
         offset: 0,
         len: b.len(),
     };
 }
+
+// a FakeArr can either be a real array (based on a Vec<u8>, a &[u8], or a memmap), or it can be a file read on demand by OS read() calls
 pub trait FakeArr: Debug {
-    fn len(&self) -> usize;
-    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<()>;
-    fn get_ofs_len(&self, start: Bound<usize>, end: Bound<usize>) -> (usize, usize) {
+    fn len(&self) -> ulen;
+    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()>;
+    fn get_ofs_len(&self, start: Bound<ulen>, end: Bound<ulen>) -> (ulen, ulen) {
         use Bound::*;
         let start = match start {
             Unbounded => 0,
@@ -34,22 +38,22 @@ pub trait FakeArr: Debug {
     /*fn slice_w_range(&self, e: SomRang) -> FakeArrPart<'_> {
 
     }*/
-    fn slice<'a>(&'a self, bounds: ShRange<usize>) -> FakeArrPart<'a> {
+    fn slice<'a>(&'a self, bounds: ShRange<ulen>) -> FakeArrSlice<'a> {
         let (offset, len) = self.get_ofs_len(bounds.0, bounds.1);
-        FakeArrPart {
-            real: Fuckyou::Dyn(self.as_dyn()),
+        FakeArrSlice {
+            real: Wtfisthis::Dyn(self.as_dyn()),
             offset,
             len,
         }
     }
-    fn full_slice(&self) -> FakeArrPart<'_> {
+    fn full_slice(&self) -> FakeArrSlice<'_> {
         self.slice((..).into())
     }
-    fn get_byte(&self, offset: usize) -> u8 {
+    fn get_byte(&self, offset: ulen) -> u8 {
         self.slice((offset..offset + 1).into()).actually_read_it()[0]
     }
     fn actually_read_it(&self) -> Vec<u8> {
-        let mut v = vec![0; self.len()];
+        let mut v = vec![0; self.len() as usize];
         self.read_into(0, &mut v).unwrap();
         v
     }
@@ -64,11 +68,6 @@ pub trait FakeArr: Debug {
 impl<'a> PartialEq for dyn FakeArr + 'a {
     fn eq(&self, other: &Self) -> bool {
         return &self.to_vec()[..] == &other.to_vec()[..];
-    }
-}
-impl Read for &dyn FakeArr {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        (*self).read_into(0, buf).map(|()| buf.len())
     }
 }
 
@@ -88,6 +87,7 @@ macro_rules! slic2 {
     ($($e:ident).+ [..]) =>(($($e).*).slice2((..).into()));
     ($($e:ident).+ [$x:tt]) => (($($e).*).get_byte($x));
 }
+// todo: is there any better way?
 pub struct ShRange<T>(Bound<T>, Bound<T>);
 
 fn bound_cloned<T: Clone>(b: Bound<&T>) -> Bound<T> {
@@ -120,49 +120,58 @@ impl<T: Clone> From<RangeToInclusive<T>> for ShRange<T> {
 
 #[derive(Debug, Clone, Copy)]
 // idk why, but i can't figure out why this can't just be &'a dyn FakeArr
-enum Fuckyou<'a> {
+enum Wtfisthis<'a> {
     Dyn(&'a dyn FakeArr),
     Slic(&'a [u8]),
 }
-impl<'a> Fuckyou<'a> {
+impl<'a> Wtfisthis<'a> {
     fn as_dyn(&self) -> &dyn FakeArr {
         match &self {
-            Fuckyou::Dyn(e) => *e,
-            Fuckyou::Slic(e) => e.as_dyn(),
+            Wtfisthis::Dyn(e) => *e,
+            Wtfisthis::Slic(e) => e.as_dyn(),
         }
     }
 }
 #[derive(Debug, Clone, Copy)]
-pub struct FakeArrPart<'a> {
-    real: Fuckyou<'a>,
-    offset: usize,
-    len: usize,
+pub struct FakeArrSlice<'a> {
+    real: Wtfisthis<'a>,
+    offset: ulen,
+    len: ulen,
 }
-impl<'a> FakeArrPart<'a> {
+impl<'a> FakeArrSlice<'a> {
+    pub fn get_offset(&self) -> ulen {
+        self.offset
+    }
     // the same as .slice, but returns a thing of the lifetime of the root real fake array instead of this part so the returned part can live longer than this one
-    pub fn slice2(&self, b: ShRange<usize>) -> FakeArrPart<'a> {
+    pub fn slice2(&self, b: ShRange<ulen>) -> FakeArrSlice<'a> {
         let (start, len) = self.get_ofs_len(b.0, b.1);
-        return FakeArrPart {
+        return FakeArrSlice {
             real: self.real,
             offset: self.offset + start,
             len,
         };
     }
 }
-impl<'a> FakeArr for FakeArrPart<'a> {
-    fn len(&self) -> usize {
+impl Read for FakeArrSlice<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read_len = std::cmp::min(buf.len(), self.len);
+        let res = (*self).read_into(0, buf).map(|()| read_len);
+        self.offset += read_len;
+        self.len -= read_len;
+        res
+    }
+}
+
+impl<'a> FakeArr for FakeArrSlice<'a> {
+    fn len(&self) -> ulen {
         self.len
     }
 
-    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<()> {
+    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()> {
         self.real.as_dyn().read_into(self.offset + offset, buf)
     }
 
-    /*fn get_byte(&self, offset: usize) -> u8 {
-        self.real.as_dyn().get_byte(self.offset + offset)
-    }*/
-
-    fn slice(&self, b: ShRange<usize>) -> FakeArrPart<'a> {
+    fn slice(&self, b: ShRange<ulen>) -> FakeArrSlice<'a> {
         self.slice2(b)
     }
 
@@ -171,71 +180,17 @@ impl<'a> FakeArr for FakeArrPart<'a> {
     }
 }
 
-pub type FakeArrRef<'a> = FakeArrPart<'a>;
-/*#[derive(Clone, Copy)]
-pub struct FakeArrRef<'a> {
-    arr: &'a dyn FakeArr,
-}
-impl FakeArrRef<'_> {
-    fn new(arr: &dyn FakeArr) -> FakeArrRef {
-        FakeArrRef { arr }
-    }
-}
+pub type FakeArrRef<'a> = FakeArrSlice<'a>;
 
-impl<'a> std::ops::Deref for FakeArrRef<'a> {
-    type Target = dyn FakeArr + 'a;
-
-    fn deref(&self) -> &Self::Target {
-        self.arr
-    }
-}
-
-impl Index<usize> for FakeArrRef<'_> {
-    type Output = u8;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        todo!()
-    }
-}
-impl Index<RangeFrom<usize>> for FakeArrRef<'_> {
-    type Output = [u8];
-
-    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
-        todo!()
-    }
-}
-impl Index<RangeToInclusive<usize>> for FakeArrRef<'_> {
-    type Output = [u8];
-
-    fn index(&self, index: RangeToInclusive<usize>) -> &Self::Output {
-        todo!()
-    }
-}
-impl Index<Range<usize>> for FakeArrRef<'_> {
-    type Output = [u8];
-
-    fn index(&self, index: Range<usize>) -> &Self::Output {
-        todo!()
-    }
-}*/
-
-/*impl Index<RangeFull<usize>> for FakeArr {
-    type Output = [u8];
-}*/
 
 impl FakeArr for Vec<u8> {
-    fn len(&self) -> usize {
-        self.len()
+    fn len(&self) -> ulen {
+        self.len() as ulen
     }
 
-    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<()> {
-        buf.copy_from_slice(&self[offset..offset + buf.len()]);
-        Ok(())
+    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()> {
+        <&[u8] as FakeArr>::read_into(&&self[..], offset, buf)
     }
-
-    /*fn get_byte(&self, offset: usize) -> u8 {
-        self[offset]
-    }*/
 
     fn as_dyn(&self) -> &dyn FakeArr {
         self
@@ -243,66 +198,25 @@ impl FakeArr for Vec<u8> {
 }
 
 impl FakeArr for &[u8] {
-    fn len(&self) -> usize {
-        return (self as &[u8]).len();
+    fn len(&self) -> ulen {
+        return (self as &[u8]).len() as ulen;
     }
 
-    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<()> {
-        buf.copy_from_slice(&self[offset..offset + buf.len()]);
+    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()> {
+        let end = offset as usize + buf.len();
+        buf.copy_from_slice(&self[offset as usize..end]);
         Ok(())
     }
-
-    /*fn get_byte(&self, offset: usize) -> u8 {
-        self[offset]
-    }*/
-
-    /*fn slice(&self, bounds: ShRange<usize>) -> FakeArrPart<'_> {
-        let (start, len) = self.get_ofs_len(bounds.0, bounds.1);
-        slice_to_fake_arr(&self[start..start + len])
-    }*/
     fn as_dyn(&self) -> &dyn FakeArr {
         self
     }
 }
 
-/*#[derive(Debug, Clone, Copy)]
-pub struct FakeArrSlice<'a> {
-    real: &'a [u8],
-    offset: usize,
-    len: usize,
-}
-impl<'a> FakeArr for FakeArrSlice<'a> {
-    fn len(&self) -> usize {
-        todo!()
-    }
-
-    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<usize> {
-        todo!()
-    }
-
-    fn slice(&self, b: ShRange<usize>) -> FakeArrPart {
-        todo!()
-    }
-
-    fn get_byte(&self, offset: usize) -> u8 {
-        todo!()
-    }
-
-    fn as_dyn(&self) -> &dyn FakeArr {
-        todo!()
-    }
-
-}*/
-
 const EMPTY1: &[u8; 0] = &[];
-/*pub const EMPTY2: FakeArrSlice = FakeArrSlice {
-    real: EMPTY1,
-    offset: 0,
-    len: 0,
-};*/
-pub fn empty() -> FakeArrPart<'static> {
-    let x = FakeArrPart {
-        real: Fuckyou::Slic(EMPTY1),
+
+pub fn empty() -> FakeArrSlice<'static> {
+    let x = FakeArrSlice {
+        real: Wtfisthis::Slic(EMPTY1),
         offset: 0,
         len: 0,
     };
@@ -310,24 +224,9 @@ pub fn empty() -> FakeArrPart<'static> {
 }
 
 pub fn slice_to_fake_arr<'a>(slice: &'a [u8]) -> FakeArrRef<'a> {
-    // slice.as_dyn().slice((..).into())
-    println!("slice_to_fake_arr: {:?}", slice);
-    FakeArrPart {
-        real: Fuckyou::Slic(slice),
+    FakeArrSlice {
+        real: Wtfisthis::Slic(slice),
         offset: 0,
-        len: slice.len(),
+        len: slice.len() as ulen,
     }
 }
-/*pub fn slice_to_fake_arr(slice: &[u8]) -> FakeArrFromSlice {
-    FakeArrFromSlice { slice }
-}*/
-/*impl<'a> FakeArr for FakeArrFromSlice<'a> {
-    fn len(&self) -> usize {
-        todo!()
-    }
-
-    fn actually_read_it(&self) -> Vec<u8> {
-        todo!()
-    }
-}
-*/
