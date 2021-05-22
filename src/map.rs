@@ -2,7 +2,7 @@ use std::fmt;
 use std::io;
 use std::iter::FromIterator;
 
-use crate::{automaton::{AlwaysMatch, Automaton}, fake_arr::{FakeArr, FakeArrRef}};
+use crate::{automaton::{AlwaysMatch, Automaton}, fake_arr::{FakeArr, FakeArrRef, Ulen}};
 use crate::raw;
 pub use crate::raw::IndexedValue;
 use crate::stream::{IntoStreamer, Streamer};
@@ -258,7 +258,7 @@ impl<Data: FakeArr> Map<Data> {
 
     /// Returns the number of elements in this map.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> Ulen {
         self.0.len()
     }
 

@@ -2,10 +2,7 @@ use std::io;
 
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
-use crate::{
-    fake_arr::{FakeArr, FakeArrRef},
-    slic,
-};
+use crate::{fake_arr::{FakeArr, FakeArrRef, Ulen}, slic};
 
 /// pack_uint packs the given integer in the smallest number of bytes possible,
 /// and writes it to the given writer. The number of bytes written is returned
@@ -32,7 +29,7 @@ pub fn pack_uint_in<W: io::Write>(mut wtr: W, n: u64, nbytes: u8) -> io::Result<
 #[inline(always)]
 pub fn unpack_uint(slice: FakeArrRef<'_>, nbytes: u8) -> u64 {
     LittleEndian::read_uint(
-        &slic!(slice[0..(nbytes as usize)]).actually_read_it(),
+        &slic!(slice[0..(nbytes as Ulen)]).actually_read_it(),
         nbytes as usize,
     )
 }

@@ -1,4 +1,4 @@
-use crate::raw::build::BuilderNode;
+use crate::{raw::build::BuilderNode};
 use crate::raw::{CompiledAddr, NONE_ADDRESS};
 
 #[derive(Debug)]

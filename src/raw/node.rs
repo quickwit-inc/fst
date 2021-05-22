@@ -5,15 +5,15 @@ use std::ops::Range;
 
 use byteorder::WriteBytesExt;
 
-use crate::{fake_arr::{empty, FakeArr, FakeArrRef}, raw::build::BuilderNode, slic, slic2};
+use crate::{fake_arr::{FakeArr, FakeArrRef, Ulen, empty}, raw::build::BuilderNode, slic, slic2};
 use crate::raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
 use crate::raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
-use crate::raw::{u64_to_usize, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
+use crate::raw::{u64_to_Ulen, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
 
 /// The threshold (in number of transitions) at which an index is created for
 /// a node's transitions. This speeds up lookup time at the expense of FST
 /// size.
-const TRANS_INDEX_THRESHOLD: usize = 32;
+const TRANS_INDEX_THRESHOLD: Ulen = 32;
 
 /// Node represents a single state in a finite state transducer.
 ///
@@ -24,9 +24,9 @@ pub struct Node<'f> {
     version: u64,
     state: State,
     start: CompiledAddr,
-    end: usize,
+    end: Ulen,
     is_final: bool,
-    ntrans: usize,
+    ntrans: Ulen,
     sizes: PackSizes,
     final_output: Output,
 }
@@ -131,7 +131,7 @@ impl<'f> Node<'f> {
 
     /// Returns the transition at index `i`.
     #[inline(always)]
-    pub fn transition(&self, i: usize) -> Transition {
+    pub fn transition(&self, i: Ulen) -> Transition {
         use self::State::*;
         match self.state {
             OneTransNext(s) => {
@@ -161,7 +161,7 @@ impl<'f> Node<'f> {
 
     /// Returns the transition address of the `i`th transition.
     #[inline(always)]
-    pub fn transition_addr(&self, i: usize) -> CompiledAddr {
+    pub fn transition_addr(&self, i: Ulen) -> CompiledAddr {
         use self::State::*;
         match self.state {
             OneTransNext(s) => {
@@ -181,7 +181,7 @@ impl<'f> Node<'f> {
     ///
     /// If no transition for this byte exists, then `None` is returned.
     #[inline(always)]
-    pub fn find_input(&self, b: u8) -> Option<usize> {
+    pub fn find_input(&self, b: u8) -> Option<Ulen> {
         use self::State::*;
         match self.state {
             OneTransNext(s) if s.input(self) == b => Some(0),
@@ -211,7 +211,7 @@ impl<'f> Node<'f> {
     ///
     /// The maximum number of transitions is 256.
     #[inline(always)]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> Ulen {
         self.ntrans
     }
 
@@ -334,7 +334,7 @@ impl StateOneTransNext {
     }
 
     #[inline(always)]
-    fn input_len(self) -> usize {
+    fn input_len(self) -> Ulen {
         if self.common_input().is_none() {
             1
         } else {
@@ -343,7 +343,7 @@ impl StateOneTransNext {
     }
 
     #[inline(always)]
-    fn end_addr(self, data: FakeArrRef) -> usize {
+    fn end_addr(self, data: FakeArrRef) -> Ulen {
         data.len() - 1 - self.input_len()
     }
 
@@ -399,7 +399,7 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn input_len(self) -> usize {
+    fn input_len(self) -> Ulen {
         if self.common_input().is_none() {
             1
         } else {
@@ -414,7 +414,7 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn end_addr(self, data: FakeArrRef, sizes: PackSizes) -> usize {
+    fn end_addr(self, data: FakeArrRef, sizes: PackSizes) -> Ulen {
         data.len() - 1
         - self.input_len()
         - 1 // pack size
@@ -495,7 +495,7 @@ impl StateAnyTrans {
         for t in node.trans.iter().rev() {
             wtr.write_u8(t.inp)?;
         }
-        if node.trans.len() > TRANS_INDEX_THRESHOLD {
+        if node.trans.len() > TRANS_INDEX_THRESHOLD as usize {
             // A value of 255 indicates that no transition exists for the byte
             // at that index. (Except when there are 256 transitions.) Namely,
             // any value greater than or equal to the number of transitions in
@@ -560,14 +560,14 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn total_trans_size(self, version: u64, sizes: PackSizes, ntrans: usize) -> usize {
+    fn total_trans_size(self, version: u64, sizes: PackSizes, ntrans: Ulen) -> Ulen {
         let index_size = self.trans_index_size(version, ntrans);
         ntrans + (ntrans * sizes.transition_pack_size()) + index_size
     }
 
     #[inline(always)]
-    fn trans_index_size(self, version: u64, ntrans: usize) -> usize {
-        if version >= 2 && ntrans > TRANS_INDEX_THRESHOLD {
+    fn trans_index_size(self, version: u64, ntrans: Ulen) -> Ulen {
+        if version >= 2 && ntrans > TRANS_INDEX_THRESHOLD as Ulen {
             256
         } else {
             0
@@ -575,7 +575,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn ntrans_len(self) -> usize {
+    fn ntrans_len(self) -> Ulen {
         if self.state_ntrans().is_none() {
             1
         } else {
@@ -584,11 +584,11 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn ntrans(self, data: FakeArrRef) -> usize {
+    fn ntrans(self, data: FakeArrRef) -> Ulen {
         if let Some(n) = self.state_ntrans() {
-            n as usize
+            n as Ulen
         } else {
-            let n = slic!(data[(data.len() - 2)]) as usize;
+            let n = slic!(data[(data.len() - 2)]) as Ulen;
             if n == 1 {
                 // "1" is never a normal legal value here, because if there
                 // is only 1 transition, then it is encoded in the state byte.
@@ -600,7 +600,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn final_output(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: usize) -> Output {
+    fn final_output(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: Ulen) -> Output {
         let osize = sizes.output_pack_size();
         if osize == 0 || !self.is_final_state() {
             return Output::zero();
@@ -615,7 +615,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn end_addr(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: usize) -> usize {
+    fn end_addr(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: Ulen) -> Ulen {
         let osize = sizes.output_pack_size();
         let final_osize = if !self.is_final_state() { 0 } else { osize };
         data.len() - 1
@@ -627,7 +627,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn trans_addr(self, node: &Node, i: usize) -> CompiledAddr {
+    fn trans_addr(self, node: &Node, i: Ulen) -> CompiledAddr {
         assert!(i < node.ntrans);
         let tsize = node.sizes.transition_pack_size();
         let at = node.start
@@ -641,7 +641,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn input(self, node: &Node, i: usize) -> u8 {
+    fn input(self, node: &Node, i: Ulen) -> u8 {
         let at = node.start
                  - self.ntrans_len()
                  - 1 // pack size
@@ -652,13 +652,13 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn find_input(self, node: &Node, b: u8) -> Option<usize> {
+    fn find_input(self, node: &Node, b: u8) -> Option<Ulen> {
         if node.version >= 2 && node.ntrans > TRANS_INDEX_THRESHOLD {
             let start = node.start
                         - self.ntrans_len()
                         - 1 // pack size
                         - self.trans_index_size(node.version, node.ntrans);
-            let i = node.data.get_byte((start + b as usize)) as usize;
+            let i = node.data.get_byte((start + b as Ulen)) as Ulen;
             if i >= node.ntrans {
                 None
             } else {
@@ -681,7 +681,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn output(self, node: &Node, i: usize) -> Output {
+    fn output(self, node: &Node, i: Ulen) -> Output {
         let osize = node.sizes.output_pack_size();
         if osize == 0 {
             return Output::zero();
@@ -726,8 +726,8 @@ impl PackSizes {
     }
 
     #[inline(always)]
-    fn transition_pack_size(self) -> usize {
-        ((self.0 & 0b1111_0000) >> 4) as usize
+    fn transition_pack_size(self) -> Ulen {
+        ((self.0 & 0b1111_0000) >> 4) as Ulen
     }
 
     #[inline(always)]
@@ -737,8 +737,8 @@ impl PackSizes {
     }
 
     #[inline(always)]
-    fn output_pack_size(self) -> usize {
-        (self.0 & 0b0000_1111) as usize
+    fn output_pack_size(self) -> Ulen {
+        (self.0 & 0b0000_1111) as Ulen
     }
 }
 
@@ -748,7 +748,7 @@ impl PackSizes {
 /// the underlying `Node`.
 pub struct Transitions<'f: 'n, 'n> {
     node: &'n Node<'f>,
-    range: Range<usize>,
+    range: Range<Ulen>,
 }
 
 impl<'f, 'n> Iterator for Transitions<'f, 'n> {
@@ -825,9 +825,9 @@ fn pack_delta_size(node_addr: CompiledAddr, trans_addr: CompiledAddr) -> u8 {
 }
 
 #[inline(always)]
-fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: usize, node_addr: usize) -> CompiledAddr {
+fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: Ulen, node_addr: Ulen) -> CompiledAddr {
     let delta = unpack_uint(slice, trans_pack_size as u8);
-    let delta_addr = u64_to_usize(delta);
+    let delta_addr = u64_to_Ulen(delta);
     if delta_addr == EMPTY_ADDRESS {
         EMPTY_ADDRESS
     } else {
@@ -839,7 +839,7 @@ fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: usize, node_addr: usize)
 mod tests {
     use quickcheck::{quickcheck, TestResult};
 
-    use crate::{fake_arr::{FakeArr, slice_to_fake_arr}, raw::build::BuilderNode};
+    use crate::{fake_arr::{FakeArr, Ulen, slice_to_fake_arr}, raw::build::BuilderNode};
     use crate::raw::node::{node_new, Node};
     use crate::raw::{Builder, CompiledAddr, Fst, Output, Transition, VERSION};
     use crate::stream::Streamer;
@@ -870,7 +870,7 @@ mod tests {
     fn nodes_equal(compiled: &Node, uncompiled: &BuilderNode) -> bool {
         println!("{:?}", compiled);
         assert_eq!(compiled.is_final(), uncompiled.is_final);
-        assert_eq!(compiled.len(), uncompiled.trans.len());
+        assert_eq!(compiled.len(), uncompiled.trans.len() as Ulen);
         assert_eq!(compiled.final_output(), uncompiled.final_output);
         for (ct, ut) in compiled.transitions().zip(uncompiled.trans.iter().cloned()) {
             assert_eq!(ct.inp, ut.inp);
@@ -969,7 +969,7 @@ mod tests {
         let (addr, buf) = compile(&bnode);
         let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
         assert_eq!(node.transitions().count(), 256);
-        assert_eq!(node.len(), node.transitions().count());
+        assert_eq!(node.len(), node.transitions().count() as Ulen);
         roundtrip(&bnode);
     }
 }

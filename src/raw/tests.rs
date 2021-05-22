@@ -34,7 +34,7 @@ where
     }
     let fst = Fst::new(bfst.into_inner().unwrap()).unwrap();
     ss.dedup();
-    assert_eq!(fst.len(), ss.len());
+    assert_eq!(fst.len() as usize, ss.len());
     fst
 }
 

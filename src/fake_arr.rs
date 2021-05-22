@@ -7,7 +7,7 @@ use std::{
     ops::{Index, Range, RangeFrom, RangeFull, RangeToInclusive},
 };
 
-type ulen = u64; // maybe changeable? shouldn't be usize since then we couldn't use an index > 2GB in webassembly
+pub type Ulen = u64; // maybe changeable? shouldn't be Ulen since then we couldn't use an index > 2GB in webassembly
 
 pub fn full_slice(b: &dyn FakeArr) -> FakeArrSlice<'_> {
     return FakeArrSlice {
@@ -19,9 +19,9 @@ pub fn full_slice(b: &dyn FakeArr) -> FakeArrSlice<'_> {
 
 // a FakeArr can either be a real array (based on a Vec<u8>, a &[u8], or a memmap), or it can be a file read on demand by OS read() calls
 pub trait FakeArr: Debug {
-    fn len(&self) -> ulen;
-    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()>;
-    fn get_ofs_len(&self, start: Bound<ulen>, end: Bound<ulen>) -> (ulen, ulen) {
+    fn len(&self) -> Ulen;
+    fn read_into(&self, offset: Ulen, buf: &mut [u8]) -> std::io::Result<()>;
+    fn get_ofs_len(&self, start: Bound<Ulen>, end: Bound<Ulen>) -> (Ulen, Ulen) {
         use Bound::*;
         let start = match start {
             Unbounded => 0,
@@ -38,7 +38,7 @@ pub trait FakeArr: Debug {
     /*fn slice_w_range(&self, e: SomRang) -> FakeArrPart<'_> {
 
     }*/
-    fn slice<'a>(&'a self, bounds: ShRange<ulen>) -> FakeArrSlice<'a> {
+    fn slice<'a>(&'a self, bounds: ShRange<Ulen>) -> FakeArrSlice<'a> {
         let (offset, len) = self.get_ofs_len(bounds.0, bounds.1);
         FakeArrSlice {
             real: Wtfisthis::Dyn(self.as_dyn()),
@@ -49,7 +49,7 @@ pub trait FakeArr: Debug {
     fn full_slice(&self) -> FakeArrSlice<'_> {
         self.slice((..).into())
     }
-    fn get_byte(&self, offset: ulen) -> u8 {
+    fn get_byte(&self, offset: Ulen) -> u8 {
         self.slice((offset..offset + 1).into()).actually_read_it()[0]
     }
     fn actually_read_it(&self) -> Vec<u8> {
@@ -135,15 +135,15 @@ impl<'a> Wtfisthis<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct FakeArrSlice<'a> {
     real: Wtfisthis<'a>,
-    offset: ulen,
-    len: ulen,
+    offset: Ulen,
+    len: Ulen,
 }
 impl<'a> FakeArrSlice<'a> {
-    pub fn get_offset(&self) -> ulen {
+    pub fn get_offset(&self) -> Ulen {
         self.offset
     }
     // the same as .slice, but returns a thing of the lifetime of the root real fake array instead of this part so the returned part can live longer than this one
-    pub fn slice2(&self, b: ShRange<ulen>) -> FakeArrSlice<'a> {
+    pub fn slice2(&self, b: ShRange<Ulen>) -> FakeArrSlice<'a> {
         let (start, len) = self.get_ofs_len(b.0, b.1);
         return FakeArrSlice {
             real: self.real,
@@ -154,8 +154,8 @@ impl<'a> FakeArrSlice<'a> {
 }
 impl Read for FakeArrSlice<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let read_len = std::cmp::min(buf.len(), self.len);
-        let res = (*self).read_into(0, buf).map(|()| read_len);
+        let read_len = std::cmp::min(buf.len() as Ulen, self.len);
+        let res = (*self).read_into(0, buf).map(|()| read_len as usize);
         self.offset += read_len;
         self.len -= read_len;
         res
@@ -163,15 +163,15 @@ impl Read for FakeArrSlice<'_> {
 }
 
 impl<'a> FakeArr for FakeArrSlice<'a> {
-    fn len(&self) -> ulen {
+    fn len(&self) -> Ulen {
         self.len
     }
 
-    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()> {
+    fn read_into(&self, offset: Ulen, buf: &mut [u8]) -> std::io::Result<()> {
         self.real.as_dyn().read_into(self.offset + offset, buf)
     }
 
-    fn slice(&self, b: ShRange<ulen>) -> FakeArrSlice<'a> {
+    fn slice(&self, b: ShRange<Ulen>) -> FakeArrSlice<'a> {
         self.slice2(b)
     }
 
@@ -184,11 +184,11 @@ pub type FakeArrRef<'a> = FakeArrSlice<'a>;
 
 
 impl FakeArr for Vec<u8> {
-    fn len(&self) -> ulen {
-        self.len() as ulen
+    fn len(&self) -> Ulen {
+        self.len() as Ulen
     }
 
-    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()> {
+    fn read_into(&self, offset: Ulen, buf: &mut [u8]) -> std::io::Result<()> {
         <&[u8] as FakeArr>::read_into(&&self[..], offset, buf)
     }
 
@@ -198,11 +198,11 @@ impl FakeArr for Vec<u8> {
 }
 
 impl FakeArr for &[u8] {
-    fn len(&self) -> ulen {
-        return (self as &[u8]).len() as ulen;
+    fn len(&self) -> Ulen {
+        return (self as &[u8]).len() as Ulen;
     }
 
-    fn read_into(&self, offset: ulen, buf: &mut [u8]) -> std::io::Result<()> {
+    fn read_into(&self, offset: Ulen, buf: &mut [u8]) -> std::io::Result<()> {
         let end = offset as usize + buf.len();
         buf.copy_from_slice(&self[offset as usize..end]);
         Ok(())
@@ -227,6 +227,6 @@ pub fn slice_to_fake_arr<'a>(slice: &'a [u8]) -> FakeArrRef<'a> {
     FakeArrSlice {
         real: Wtfisthis::Slic(slice),
         offset: 0,
-        len: slice.len() as ulen,
+        len: slice.len() as Ulen,
     }
 }

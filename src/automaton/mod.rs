@@ -1,3 +1,5 @@
+use crate::fake_arr::Ulen;
+
 use self::StartsWithStateInternal::*;
 
 /// Automaton describes types that behave as a finite automaton.
@@ -143,34 +145,34 @@ impl<'a> Subsequence<'a> {
 }
 
 impl<'a> Automaton for Subsequence<'a> {
-    type State = usize;
+    type State = Ulen;
 
     #[inline]
-    fn start(&self) -> usize {
+    fn start(&self) -> Ulen {
         0
     }
 
     #[inline]
-    fn is_match(&self, &state: &usize) -> bool {
-        state == self.subseq.len()
+    fn is_match(&self, &state: &Ulen) -> bool {
+        state == self.subseq.len() as Ulen
     }
 
     #[inline]
-    fn can_match(&self, _: &usize) -> bool {
+    fn can_match(&self, _: &Ulen) -> bool {
         true
     }
 
     #[inline]
-    fn will_always_match(&self, &state: &usize) -> bool {
-        state == self.subseq.len()
+    fn will_always_match(&self, &state: &Ulen) -> bool {
+        state == self.subseq.len() as Ulen
     }
 
     #[inline]
-    fn accept(&self, &state: &usize, byte: u8) -> usize {
-        if state == self.subseq.len() {
+    fn accept(&self, &state: &Ulen, byte: u8) -> Ulen {
+        if state == self.subseq.len()  as Ulen {
             return state;
         }
-        state + (byte == self.subseq[state]) as usize
+        state + (byte == self.subseq[state as usize]) as Ulen
     }
 }
 

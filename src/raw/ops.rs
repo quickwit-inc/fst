@@ -2,7 +2,7 @@ use std::cmp;
 use std::collections::BinaryHeap;
 use std::iter::FromIterator;
 
-use crate::{fake_arr::{FakeArr, FakeArrRef, slice_to_fake_arr}, raw::Output};
+use crate::{fake_arr::{FakeArr, FakeArrRef, Ulen, slice_to_fake_arr}, raw::Output};
 use crate::stream::{IntoStreamer, Streamer};
 
 /// Permits stream operations to be hetergeneous with respect to streams.
@@ -18,7 +18,7 @@ type BoxedStream<'f> = Box<dyn for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Outp
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct IndexedValue {
     /// The index of the stream that produced this value (starting at `0`).
-    pub index: usize,
+    pub index: Ulen,
     /// The value.
     pub value: u64,
 }
@@ -250,7 +250,7 @@ impl<'a, 'f> Streamer<'a> for Intersection<'f> {
             };
             self.outs.clear();
             self.outs.push(slot.indexed_value());
-            let mut popped: usize = 1;
+            let mut popped: Ulen = 1;
             while let Some(slot2) = self.heap.pop_if_equal(slot.input()) {
                 self.outs.push(slot2.indexed_value());
                 self.heap.refill(slot2);
@@ -337,7 +337,7 @@ impl<'a, 'f> Streamer<'a> for SymmetricDifference<'f> {
             };
             self.outs.clear();
             self.outs.push(slot.indexed_value());
-            let mut popped: usize = 1;
+            let mut popped: Ulen = 1;
             while let Some(slot2) = self.heap.pop_if_equal(slot.input()) {
                 self.outs.push(slot2.indexed_value());
                 self.heap.refill(slot2);
@@ -368,7 +368,7 @@ impl<'f> StreamHeap<'f> {
             heap: BinaryHeap::new(),
         };
         for i in 0..u.rdrs.len() {
-            u.refill(Slot::new(i));
+            u.refill(Slot::new(i as Ulen));
         }
         u
     }
@@ -397,12 +397,12 @@ impl<'f> StreamHeap<'f> {
         }
     }
 
-    fn num_slots(&self) -> usize {
-        self.rdrs.len()
+    fn num_slots(&self) -> Ulen {
+        self.rdrs.len() as Ulen
     }
 
     fn refill(&mut self, mut slot: Slot) {
-        if let Some((input, output)) = self.rdrs[slot.idx].next() {
+        if let Some((input, output)) = self.rdrs[slot.idx as usize].next() {
             slot.set_input(&input.actually_read_it());
             slot.set_output(output);
             self.heap.push(slot);
@@ -412,13 +412,13 @@ impl<'f> StreamHeap<'f> {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Slot {
-    idx: usize,
+    idx: Ulen,
     input: Vec<u8>,
     output: Output,
 }
 
 impl Slot {
-    fn new(rdr_idx: usize) -> Slot {
+    fn new(rdr_idx: Ulen) -> Slot {
         Slot {
             idx: rdr_idx,
             input: Vec::with_capacity(64),

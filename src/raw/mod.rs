@@ -27,10 +27,7 @@ use std::{io::Read, ops::Deref};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::{
-    automaton::{AlwaysMatch, Automaton},
-    fake_arr::{empty, slice_to_fake_arr, FakeArr, FakeArrRef},
-};
+use crate::{automaton::{AlwaysMatch, Automaton}, fake_arr::{FakeArr, FakeArrRef, Ulen, empty, slice_to_fake_arr}};
 use crate::{error::Result, slic};
 use crate::{
     fake_arr::{full_slice, FakeArrSlice, ShRange},
@@ -92,7 +89,7 @@ pub type FstType = u64;
 ///
 /// It is most useful as a pointer to nodes. It can be used in the `Fst::node`
 /// method to resolve the pointer.
-pub type CompiledAddr = usize;
+pub type CompiledAddr = Ulen;
 
 /// An acyclic deterministic finite state transducer.
 ///
@@ -291,7 +288,7 @@ struct FstMeta {
     version: u64,
     root_addr: CompiledAddr,
     ty: FstType,
-    len: usize,
+    len: Ulen,
 }
 
 impl FstMeta {
@@ -342,11 +339,11 @@ impl<Data: FakeArr> Fst<Data> {
         let root_addr = {
             let mut last = slic!(data[(data.len() - 8)..]);
             // println!("len={}, d={:#?}, data={:?}, full={:#?}", data.len(), last, last.to_vec(), data.to_vec());
-            u64_to_usize(last.read_u64::<LittleEndian>().unwrap())
+            u64_to_Ulen(last.read_u64::<LittleEndian>().unwrap())
         };
         let len = {
             let mut last2 = slic!(data[(data.len() - 16)..]);
-            u64_to_usize(last2.read_u64::<LittleEndian>().unwrap())
+            u64_to_Ulen(last2.read_u64::<LittleEndian>().unwrap())
         };
         println!("root={}, len={}", root_addr, len);
         // The root node is always the last node written, so its address should
@@ -446,7 +443,7 @@ impl<Data: FakeArr> Fst<Data> {
 
     /// Returns the number of keys in this fst.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> Ulen {
         self.meta.len
     }
 
@@ -458,7 +455,7 @@ impl<Data: FakeArr> Fst<Data> {
 
     /// Returns the number of bytes used by this fst.
     #[inline]
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> Ulen {
         self.data.len()
     }
 
@@ -842,7 +839,7 @@ where
 #[derive(Clone, Debug)]
 struct StreamState<'f, S> {
     node: Node<'f>,
-    trans: usize,
+    trans: Ulen,
     out: Output,
     aut_state: S,
     done: bool, // ('done' = true) means that there are no unexplored transitions in the current state.
@@ -1053,7 +1050,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
 
     // The first transition that is in a bound for a given node.
     #[inline]
-    fn transition_within_bound(&self, node: &Node<'f>, bound: u8) -> Option<usize> {
+    fn transition_within_bound(&self, node: &Node<'f>, bound: u8) -> Option<Ulen> {
         let mut trans;
         if let Some(t) = self.starting_transition(&node) {
             trans = t;
@@ -1088,7 +1085,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     }
 
     #[inline]
-    fn starting_transition(&self, node: &Node<'f>) -> Option<usize> {
+    fn starting_transition(&self, node: &Node<'f>) -> Option<Ulen> {
         if node.is_empty() {
             None
         } else if !self.reversed {
@@ -1099,7 +1096,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     }
 
     #[inline]
-    fn last_transition(&self, node: &Node<'f>) -> Option<usize> {
+    fn last_transition(&self, node: &Node<'f>) -> Option<Ulen> {
         if node.is_empty() {
             None
         } else if self.reversed {
@@ -1114,7 +1111,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// The concept of `next` transition is dependent on whether the stream is in reverse mode or
     /// not. If all the transitions of this node have been emitted, this method returns None.
     #[inline]
-    fn next_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+    fn next_transition(&self, node: &Node<'f>, current_transition: Ulen) -> Option<Ulen> {
         if self.reversed {
             Self::backward_transition(node, current_transition)
         } else {
@@ -1124,7 +1121,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
 
     /// See `StreamWithState::next_transition`.
     #[inline]
-    fn previous_transition(&self, node: &Node<'f>, current_transition: usize) -> Option<usize> {
+    fn previous_transition(&self, node: &Node<'f>, current_transition: Ulen) -> Option<Ulen> {
         if self.reversed {
             Self::forward_transition(node, current_transition)
         } else {
@@ -1136,7 +1133,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     ///
     /// This is independent from whether the stream is in backward mode or not.
     #[inline]
-    fn forward_transition(node: &Node<'f>, current_transition: usize) -> Option<usize> {
+    fn forward_transition(node: &Node<'f>, current_transition: Ulen) -> Option<Ulen> {
         if current_transition + 1 < node.len() {
             Some(current_transition + 1)
         } else {
@@ -1146,7 +1143,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
 
     /// See [Stream::forward_transition].
     #[inline]
-    fn backward_transition(node: &Node<'f>, current_transition: usize) -> Option<usize> {
+    fn backward_transition(node: &Node<'f>, current_transition: Ulen) -> Option<Ulen> {
         if current_transition > 0 && !node.is_empty() {
             Some(current_transition - 1)
         } else {
@@ -1189,20 +1186,20 @@ struct Buffer {
 }
 
 impl FakeArr for Buffer {
-    fn len(&self) -> usize {
-        self.len
+    fn len(&self) -> Ulen {
+        self.len as Ulen
     }
 
-    fn read_into(&self, offset: usize, buf: &mut [u8]) -> std::io::Result<()> {
-        buf.copy_from_slice(&self.buf[offset..offset + buf.len()]);
+    fn read_into(&self, offset: Ulen, buf: &mut [u8]) -> std::io::Result<()> {
+        buf.copy_from_slice(&self.buf[offset as usize..offset as usize + buf.len()]);
         Ok(())
     }
 
-    fn get_byte(&self, offset: usize) -> u8 {
-        self.buf[offset]
+    fn get_byte(&self, offset: Ulen) -> u8 {
+        self.buf[offset as usize]
     }
 
-    fn slice<'a>(&'a self, b: ShRange<usize>) -> FakeArrSlice<'a> {
+    fn slice<'a>(&'a self, b: ShRange<Ulen>) -> FakeArrSlice<'a> {
         let x = full_slice(self);
         x.slice2(b)
     }
@@ -1211,7 +1208,7 @@ impl FakeArr for Buffer {
         self
     }
 
-    /*fn slice(&self, range: ShRange<usize>) -> FakeArrPart<'_> {
+    /*fn slice(&self, range: ShRange<Ulen>) -> FakeArrPart<'_> {
         // implement generally in trait itself
         FakeArrPart {
 
@@ -1353,13 +1350,13 @@ impl fmt::Debug for Transition {
 
 #[inline]
 #[cfg(target_pointer_width = "64")]
-fn u64_to_usize(n: u64) -> usize {
-    n as usize
+fn u64_to_Ulen(n: u64) -> Ulen {
+    n as Ulen
 }
 
 #[inline]
 #[cfg(not(target_pointer_width = "64"))]
-fn u64_to_usize(n: u64) -> usize {
+fn u64_to_Ulen(n: u64) -> Ulen {
     if n > ::std::usize::MAX as u64 {
         panic!(
             "\
@@ -1370,5 +1367,5 @@ system.",
             n
         );
     }
-    n as usize
+    n as Ulen
 }

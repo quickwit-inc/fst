@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use byteorder::{LittleEndian, WriteBytesExt};
 
-use crate::{error::Result, fake_arr::FakeArrRef};
+use crate::{error::Result, fake_arr::{FakeArrRef, Ulen}};
 use crate::raw::counting_writer::CountingWriter;
 use crate::raw::error::Error;
 use crate::raw::registry::{Registry, RegistryEntry};
@@ -68,7 +68,7 @@ pub struct Builder<W> {
     /// since states are compiled in reverse.)
     last_addr: CompiledAddr,
     /// The number of keys added.
-    len: usize,
+    len: Ulen,
 }
 
 #[derive(Debug)]
@@ -231,7 +231,7 @@ impl<W: io::Write> Builder<W> {
         } else {
             (self.unfinished.find_common_prefix(bs), Output::zero())
         };
-        if prefix_len == bs.len() {
+        if prefix_len as usize == bs.len() {
             // If the prefix found consumes the entire set of bytes, then
             // the prefix *equals* the bytes given. This means it is a
             // duplicate value with no output. So we can give up here.
@@ -243,11 +243,11 @@ impl<W: io::Write> Builder<W> {
         }
         self.len += 1;
         self.compile_from(prefix_len)?;
-        self.unfinished.add_suffix(&bs[prefix_len..], out);
+        self.unfinished.add_suffix(&bs[prefix_len as usize..], out);
         Ok(())
     }
 
-    fn compile_from(&mut self, istate: usize) -> Result<()> {
+    fn compile_from(&mut self, istate: Ulen) -> Result<()> {
         let mut addr = NONE_ADDRESS;
         while istate + 1 < self.unfinished.len() {
             let node = if addr == NONE_ADDRESS {
@@ -321,8 +321,8 @@ impl UnfinishedNodes {
         unfinished
     }
 
-    fn len(&self) -> usize {
-        self.stack.len()
+    fn len(&self) -> Ulen {
+        self.stack.len() as Ulen
     }
 
     fn push_empty(&mut self, is_final: bool) {
@@ -382,14 +382,14 @@ impl UnfinishedNodes {
         self.push_empty(true);
     }
 
-    fn find_common_prefix(&mut self, bs: &[u8]) -> usize {
+    fn find_common_prefix(&mut self, bs: &[u8]) -> Ulen {
         bs.iter()
             .zip(&self.stack)
             .take_while(|&(&b, ref node)| node.last.as_ref().map(|t| t.inp == b).unwrap_or(false))
-            .count()
+            .count() as Ulen
     }
 
-    fn find_common_prefix_and_set_output(&mut self, bs: &[u8], mut out: Output) -> (usize, Output) {
+    fn find_common_prefix_and_set_output(&mut self, bs: &[u8], mut out: Output) -> (Ulen, Output) {
         let mut i = 0;
         while i < bs.len() {
             let add_prefix = match self.stack[i].last.as_mut() {
@@ -407,7 +407,7 @@ impl UnfinishedNodes {
                 self.stack[i].add_output_prefix(add_prefix);
             }
         }
-        (i, out)
+        (i as Ulen, out)
     }
 }
 
