@@ -79,6 +79,13 @@ impl<'f> OpBuilder<'f> {
         self.streams.push(Box::new(stream.into_stream()));
     }
 
+    /// Performs a chain operation on all streams that have been added.
+    ///
+    /// Panics when no streams have been added.
+    #[inline]
+    pub fn chain(self) -> Chain<'f> {
+        Chain::new(self.streams)
+    }
     /// Performs a union operation on all streams that have been added.
     ///
     /// Note that this returns a stream of `(&[u8], &[IndexedValue])`. The
@@ -190,6 +197,49 @@ where
         let mut op = OpBuilder::default();
         op.extend(it);
         op
+    }
+}
+
+/// A stream of chaining multiple fst streams in added order.
+///
+/// The `'f` lifetime parameter refers to the lifetime of the underlying map.
+pub struct Chain<'f> {
+    streams: Vec<BoxedStream<'f>>,
+    current_stream: BoxedStream<'f>,
+    key: Vec<u8>,
+}
+
+impl<'f> Chain<'f> {
+    /// Creates a new Chain. panics when streams is empty
+    fn new(mut streams: Vec<BoxedStream<'f>>) -> Self {
+        streams.reverse();
+
+        let current_stream = streams.pop().unwrap();
+        Chain {
+            streams,
+            current_stream,
+            key: vec![],
+        }
+    }
+}
+
+impl<'a, 'f> Streamer<'a> for Chain<'f> {
+    type Item = (&'a [u8], Output);
+
+    fn next(&'a mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((key, val)) = self.current_stream.next() {
+                self.key.clear();
+                self.key.extend_from_slice(&key);
+                return Some((&self.key, val));
+            } else {
+                if let Some(next_stream) = self.streams.pop() {
+                    self.current_stream = next_stream;
+                } else {
+                    return None;
+                }
+            }
+        }
     }
 }
 
@@ -465,6 +515,7 @@ impl Ord for Slot {
 mod tests {
     use crate::raw::tests::{fst_map, fst_set};
     use crate::raw::Fst;
+    use crate::raw::Output;
     use crate::stream::{IntoStreamer, Streamer};
 
     use super::OpBuilder;
@@ -505,15 +556,61 @@ mod tests {
         };
     }
 
+    macro_rules! create_map_op_chain {
+        ($name:ident, $op:ident) => {
+            fn $name(sets: Vec<Vec<(&str, u64)>>) -> Vec<(String, Output)> {
+                let fsts: Vec<Fst> = sets.into_iter().map(fst_map).collect();
+                let op: OpBuilder = fsts.iter().collect();
+                let mut stream = op.$op().into_stream();
+                let mut keys = vec![];
+                while let Some((key, outs)) = stream.next() {
+                    let s = String::from_utf8(key.to_vec()).unwrap();
+                    keys.push((s, outs));
+                }
+                keys
+            }
+        };
+    }
     create_set_op!(fst_union, union);
     create_set_op!(fst_intersection, intersection);
     create_set_op!(fst_symmetric_difference, symmetric_difference);
     create_set_op!(fst_difference, difference);
+    create_set_op!(fst_chain, chain);
     create_map_op!(fst_union_map, union);
     create_map_op!(fst_intersection_map, intersection);
     create_map_op!(fst_symmetric_difference_map, symmetric_difference);
     create_map_op!(fst_difference_map, difference);
+    create_map_op_chain!(fst_chain_map, chain);
 
+    #[test]
+    fn chain_set() {
+        let v = fst_chain(vec![vec!["a", "b", "c"], vec!["x", "y", "z"]]);
+        assert_eq!(v, vec!["a", "b", "c", "x", "y", "z"]);
+    }
+    #[test]
+    fn chain_set_wrong_order() {
+        // Chaining doesn't care about order
+        let v = fst_chain(vec![vec!["a", "b", "c", "z"], vec!["x", "y", "z"]]);
+        assert_eq!(v, vec!["a", "b", "c", "z", "x", "y", "z"]);
+    }
+    #[test]
+    fn chain_map() {
+        let v = fst_chain_map(vec![
+            vec![("a", 1), ("b", 2), ("c", 3)],
+            vec![("x", 1), ("y", 2), ("z", 3)],
+        ]);
+        assert_eq!(
+            v,
+            vec![
+                (s("a"), Output::new(1)),
+                (s("b"), Output::new(2)),
+                (s("c"), Output::new(3)),
+                (s("x"), Output::new(1)),
+                (s("y"), Output::new(2)),
+                (s("z"), Output::new(3)),
+            ]
+        );
+    }
     #[test]
     fn union_set() {
         let v = fst_union(vec![vec!["a", "b", "c"], vec!["x", "y", "z"]]);

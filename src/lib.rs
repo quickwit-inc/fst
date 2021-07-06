@@ -10,7 +10,7 @@
 
 pub use crate::automaton::Automaton;
 pub use crate::error::{Error, Result};
-pub use crate::map::{Map, MapBuilder};
+pub use crate::map::{Chain, Map, MapBuilder};
 pub use crate::stream::{IntoStreamer, Streamer};
 
 mod regex;

@@ -5,6 +5,7 @@ use std::iter::FromIterator;
 use crate::automaton::{AlwaysMatch, Automaton};
 use crate::raw;
 pub use crate::raw::IndexedValue;
+use crate::raw::Output;
 use crate::stream::{IntoStreamer, Streamer};
 use crate::Result;
 use std::ops::Deref;
@@ -814,6 +815,45 @@ impl<'m> OpBuilder<'m> {
         Union(self.0.union())
     }
 
+    /// Chains all streams that have been added in the order they have been added.
+    ///
+    /// Note that this returns a stream of `(&[u8], &[Output])`. The
+    /// first element of the tuple is the byte string key. The second element
+    /// of the tuple is the value associated with that key in the underlying
+    /// streams. This is useful when the streams area already sorted and not
+    /// overlapping.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tantivy_fst::{IntoStreamer, Streamer, Map};
+    /// use tantivy_fst::raw::Output;
+    /// use tantivy_fst::map::IndexedValue;
+    ///
+    /// let map1 = Map::from_iter(vec![
+    ///     ("a", 1), ("b", 2),
+    /// ]).unwrap();
+    /// let map2 = Map::from_iter(vec![
+    ///     ("a", 11), ("y", 12),
+    /// ]).unwrap();
+    ///
+    /// let mut chain = map1.op().add(&map2).chain();
+    ///
+    /// let mut kvs = vec![];
+    /// while let Some((k, v)) = chain.next() {
+    ///     kvs.push((k.to_vec(), v));
+    /// }
+    /// assert_eq!(kvs, vec![
+    ///     (b"a".to_vec(), Output::new(1)),
+    ///     (b"b".to_vec(), Output::new(2)),
+    ///     (b"a".to_vec(), Output::new(11)),
+    ///     (b"y".to_vec(), Output::new(12)),
+    /// ]);
+    /// ```
+    #[inline]
+    pub fn chain(self) -> Chain<'m> {
+        Chain(self.0.chain())
+    }
     /// Performs an intersection operation on all streams that have been added.
     ///
     /// Note that this returns a stream of `(&[u8], &[IndexedValue])`. The
@@ -982,6 +1022,20 @@ pub struct Union<'m>(raw::Union<'m>);
 
 impl<'a, 'm> Streamer<'a> for Union<'m> {
     type Item = (&'a [u8], &'a [IndexedValue]);
+
+    #[inline]
+    fn next(&'a mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+/// A stream of set union over multiple map streams in lexicographic order.
+///
+/// The `'m` lifetime parameter refers to the lifetime of the underlying map.
+pub struct Chain<'m>(raw::Chain<'m>);
+
+impl<'a, 'm> Streamer<'a> for Chain<'m> {
+    type Item = (&'a [u8], Output);
 
     #[inline]
     fn next(&'a mut self) -> Option<Self::Item> {

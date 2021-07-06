@@ -245,6 +245,7 @@ impl<'f> Node<'f> {
         }
     }
 
+    #[inline]
     fn compile<W: io::Write>(
         wtr: W,
         last_addr: CompiledAddr,
@@ -265,6 +266,7 @@ impl<'f> Node<'f> {
 }
 
 impl BuilderNode {
+    #[inline]
     pub fn compile_to<W: io::Write>(
         &self,
         wtr: W,

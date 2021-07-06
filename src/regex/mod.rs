@@ -1,7 +1,6 @@
 use crate::Automaton;
 use regex_syntax;
 use std::fmt;
-use utf8_ranges;
 
 mod compile;
 mod dfa;

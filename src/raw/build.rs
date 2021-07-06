@@ -261,6 +261,7 @@ impl<W: io::Write> Builder<W> {
         Ok(())
     }
 
+    #[inline]
     fn compile(&mut self, node: &BuilderNode) -> Result<CompiledAddr> {
         if node.is_final && node.trans.is_empty() && node.final_output.is_zero() {
             return Ok(EMPTY_ADDRESS);

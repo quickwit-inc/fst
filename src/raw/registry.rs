@@ -27,6 +27,7 @@ pub enum RegistryEntry<'a> {
 }
 
 impl Registry {
+    #[inline]
     pub fn new(table_size: usize, mru_size: usize) -> Registry {
         let empty_cell = RegistryCell::none();
         let ncells = table_size.checked_mul(mru_size).unwrap();
@@ -37,6 +38,7 @@ impl Registry {
         }
     }
 
+    #[inline]
     pub fn entry(&mut self, node: &BuilderNode) -> RegistryEntry {
         if self.table.is_empty() {
             return RegistryEntry::Rejected;
@@ -50,6 +52,7 @@ impl Registry {
         .entry(node)
     }
 
+    #[inline]
     fn hash(&self, node: &BuilderNode) -> usize {
         // Basic FNV-1a hash as described:
         // https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
@@ -70,6 +73,7 @@ impl Registry {
 }
 
 impl<'a> RegistryCache<'a> {
+    #[inline]
     fn entry(mut self, node: &BuilderNode) -> RegistryEntry<'a> {
         if self.cells.len() == 1 {
             let cell = &mut self.cells[0];
@@ -94,6 +98,7 @@ impl<'a> RegistryCache<'a> {
         }
     }
 
+    #[inline]
     fn promote(&mut self, mut i: usize) {
         assert!(i < self.cells.len());
         while i > 0 {

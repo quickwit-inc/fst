@@ -33,7 +33,7 @@ pub use self::error::Error;
 use self::node::node_new;
 pub use self::node::{Node, Transitions};
 pub use self::ops::{
-    Difference, IndexedValue, Intersection, OpBuilder, SymmetricDifference, Union,
+    Chain, Difference, IndexedValue, Intersection, OpBuilder, SymmetricDifference, Union,
 };
 
 mod build;
