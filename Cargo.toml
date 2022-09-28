@@ -1,6 +1,6 @@
 [package]
 name = "tantivy-fst"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Andrew Gallant <jamslam@gmail.com>"] # forked from Andrew Gallant's work
 description = """
 This is a tantivy-specific fork from the fst crate from Burntsushi. (Please use the fst crate instead.)
