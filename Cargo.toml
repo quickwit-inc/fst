@@ -24,9 +24,13 @@ path = "./benches/search.rs"
 test = false
 bench = true
 
+[features]
+default = []
+regex = ["regex-syntax"]
+
 [dependencies]
 byteorder = "1"
-regex-syntax = "0.6"
+regex-syntax = { version = "0.6", optional = true }
 utf8-ranges = "1"
 
 [dev-dependencies]

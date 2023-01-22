@@ -3,7 +3,9 @@ use crate::error::Error;
 use crate::inner_automaton::Automaton;
 use crate::raw::{self, Bound, Buffer, Builder, Fst, Output, Stream, VERSION};
 use crate::stream::Streamer;
-use crate::{IntoStreamer, Regex};
+use crate::IntoStreamer;
+#[cfg(feature = "regex")]
+use crate::Regex;
 use std::ops::Deref;
 
 const TEXT: &'static str = include_str!("./../../data/words-100000");
@@ -622,6 +624,7 @@ fn starting_transition() {
 }
 
 #[test]
+#[cfg(feature = "regex")]
 fn test_return_node_on_reverse_only_if_match() {
     let items: Vec<_> = vec!["a", "ab"]
         .into_iter()
@@ -780,6 +783,7 @@ where
 }
 
 #[test]
+#[cfg(feature = "regex")]
 fn test_simple() {
     let items: Vec<_> = vec![("", 0u64)];
     let fst: Fst = fst_map(items.clone()).into();
@@ -895,6 +899,7 @@ fn bytes_written() {
     assert_eq!(counted_len + footer_size, fst1_len);
 }
 
+#[cfg(feature = "regex")]
 macro_rules! test_range_with_aut {
     (
         $name:ident,
@@ -944,6 +949,7 @@ macro_rules! test_range_with_aut {
     };
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_1,
     min: Bound::Unbounded, max: Bound::Unbounded,
@@ -953,6 +959,7 @@ test_range_with_aut! {
     output: vec!["a", "aa", "aaa"],
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_2,
     min: Bound::Unbounded, max: Bound::Unbounded,
@@ -962,6 +969,7 @@ test_range_with_aut! {
     output: vec!["aa", "aaa"],
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_3,
     min: Bound::Unbounded, max: Bound::Unbounded,
@@ -971,6 +979,7 @@ test_range_with_aut! {
     output: vec![],
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_4,
     min: Bound::Unbounded, max: Bound::Unbounded,
@@ -980,6 +989,7 @@ test_range_with_aut! {
     output: vec!["b"],
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_5,
     min: Bound::Unbounded, max: Bound::Unbounded,
@@ -989,6 +999,7 @@ test_range_with_aut! {
     output: vec![],
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_6,
     min: Bound::Unbounded, max: Bound::Unbounded,
@@ -998,6 +1009,7 @@ test_range_with_aut! {
     output: vec![],
 }
 
+#[cfg(feature = "regex")]
 test_range_with_aut! {
     fst_range_aut_7,
     min: Bound::Excluded(b"a".to_vec()), max: Bound::Excluded(b"ca".to_vec()),
@@ -1040,6 +1052,7 @@ proptest! {
                           max in bound_strategy()) {
         let mut vec: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
         vec.sort();
+        #[cfg(feature = "regex")]
         test_range_with_aut_fn(vec.clone(), Regex::new(&r).unwrap(), min, max);
     }
 }

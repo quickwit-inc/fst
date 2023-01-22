@@ -13,8 +13,10 @@ pub use crate::error::{Error, Result};
 pub use crate::map::{Chain, Map, MapBuilder};
 pub use crate::stream::{IntoStreamer, Streamer};
 
+#[cfg(feature = "regex")]
 mod regex;
 
+#[cfg(feature = "regex")]
 pub use self::regex::Regex;
 
 mod error;

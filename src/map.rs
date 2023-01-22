@@ -261,8 +261,10 @@ impl<Data: Deref<Target = [u8]>> Map<Data> {
     /// use std::error::Error;
     ///
     /// use tantivy_fst::{IntoStreamer, Streamer, Map};
+    /// #[cfg(feature = "regex")]
     /// use tantivy_fst::Regex;
     ///
+    /// #[cfg(feature = "regex")]
     /// fn example() -> Result<(), Box<Error>> {
     ///     let map = Map::from_iter(vec![
     ///         ("foo", 1), ("foo1", 2), ("foo2", 3), ("foo3", 4), ("foobar", 5),
@@ -284,7 +286,6 @@ impl<Data: Deref<Target = [u8]>> Map<Data> {
     ///     Ok(())
     /// }
     ///
-    /// # assert!(example().is_ok());
     /// ```
     pub fn search<A: Automaton>(&self, aut: A) -> StreamBuilder<A> {
         StreamBuilder(self.0.search(aut))
