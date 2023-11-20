@@ -950,131 +950,125 @@ macro_rules! test_range_with_aut {
 }
 
 #[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_1,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 3,
-    aut: Regex::new("a*").unwrap(),
-    input: vec!["a", "aa", "aaa"],
-    output: vec!["a", "aa", "aaa"],
-}
-
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_2,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 2,
-    aut: Regex::new("a*").unwrap(),
-    input: vec!["b", "aa", "aaa"],
-    output: vec!["aa", "aaa"],
-}
-
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_3,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 0,
-    aut: Regex::new("").unwrap(),
-    input: vec!["b", "aa", "aaa"],
-    output: vec![],
-}
-
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_4,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 1,
-    aut: Regex::new("b").unwrap(),
-    input: vec!["b", "aa", "aaa"],
-    output: vec!["b"],
-}
-
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_5,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 0,
-    aut: Regex::new("c").unwrap(),
-    input: vec!["b", "aa", "aaa"],
-    output: vec![],
-}
-
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_6,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 0,
-    aut: Regex::new("a").unwrap(),
-    input: vec![],
-    output: vec![],
-}
-
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_7,
-    min: Bound::Excluded(b"a".to_vec()), max: Bound::Excluded(b"ca".to_vec()),
-    imin: 0, imax: 1,
-    aut: Regex::new("c").unwrap(),
-    input: vec!["a", "ba", "bb", "c"],
-    output: vec!["c"],
-}
-
-// Exactly 2 times
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_8,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 1,
-    aut: Regex::new("(?:ab){2}").unwrap(),
-    input: vec!["ab", "abaa", "abab", "ababab"],
-    output: vec!["abab"],
-}
-
-// At least 2 times
-#[cfg(feature = "regex")]
-test_range_with_aut! {
-    fst_range_aut_9,
-    min: Bound::Unbounded, max: Bound::Unbounded,
-    imin: 0, imax: 2,
-    aut: Regex::new("(?:ab){2,}").unwrap(),
-    input: vec!["ab", "abaa", "abab", "ababab"],
-    output: vec!["abab", "ababab"],
-}
-
-use proptest::prelude::*;
-
-const REGEX_STRING: &'static str = "[a-c\\.]{0,4}";
-
-prop_compose! {
-    fn in_bound()(
-        bound in "[a-c]*"
-    ) -> Bound {
-        Bound::Included(bound.as_bytes().to_vec())
+mod regex_tests {
+    use super::*;
+    test_range_with_aut! {
+        fst_range_aut_1,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 3,
+        aut: Regex::new("a*").unwrap(),
+        input: vec!["a", "aa", "aaa"],
+        output: vec!["a", "aa", "aaa"],
     }
-}
 
-prop_compose! {
-    fn ex_bound()(
-        bound in "[a-c]*"
-    ) -> Bound {
-        Bound::Excluded(bound.as_bytes().to_vec())
+    test_range_with_aut! {
+        fst_range_aut_2,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 2,
+        aut: Regex::new("a*").unwrap(),
+        input: vec!["b", "aa", "aaa"],
+        output: vec!["aa", "aaa"],
     }
-}
 
-fn bound_strategy() -> BoxedStrategy<Bound> {
-    prop_oneof![Just(Bound::Unbounded), in_bound(), ex_bound(),].boxed()
-}
+    test_range_with_aut! {
+        fst_range_aut_3,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 0,
+        aut: Regex::new("").unwrap(),
+        input: vec!["b", "aa", "aaa"],
+        output: vec![],
+    }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
-    #[test]
-    fn proptest_traversal(set in prop::collection::hash_set("[a-c]{0,3}", 0..39),
-                          r in REGEX_STRING,
-                          min in bound_strategy(),
-                          max in bound_strategy()) {
-        let mut vec: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
-        vec.sort();
-        #[cfg(feature = "regex")]
-        test_range_with_aut_fn(vec.clone(), Regex::new(&r).unwrap(), min, max);
+    test_range_with_aut! {
+        fst_range_aut_4,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 1,
+        aut: Regex::new("b").unwrap(),
+        input: vec!["b", "aa", "aaa"],
+        output: vec!["b"],
+    }
+
+    test_range_with_aut! {
+        fst_range_aut_5,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 0,
+        aut: Regex::new("c").unwrap(),
+        input: vec!["b", "aa", "aaa"],
+        output: vec![],
+    }
+
+    test_range_with_aut! {
+        fst_range_aut_6,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 0,
+        aut: Regex::new("a").unwrap(),
+        input: vec![],
+        output: vec![],
+    }
+
+    test_range_with_aut! {
+        fst_range_aut_7,
+        min: Bound::Excluded(b"a".to_vec()), max: Bound::Excluded(b"ca".to_vec()),
+        imin: 0, imax: 1,
+        aut: Regex::new("c").unwrap(),
+        input: vec!["a", "ba", "bb", "c"],
+        output: vec!["c"],
+    }
+
+    // Exactly 2 times
+    test_range_with_aut! {
+        fst_range_aut_8,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 1,
+        aut: Regex::new("(?:ab){2}").unwrap(),
+        input: vec!["ab", "abaa", "abab", "ababab"],
+        output: vec!["abab"],
+    }
+
+    // At least 2 times
+    test_range_with_aut! {
+        fst_range_aut_9,
+        min: Bound::Unbounded, max: Bound::Unbounded,
+        imin: 0, imax: 2,
+        aut: Regex::new("(?:ab){2,}").unwrap(),
+        input: vec!["ab", "abaa", "abab", "ababab"],
+        output: vec!["abab", "ababab"],
+    }
+
+    use proptest::prelude::*;
+
+    const REGEX_STRING: &'static str = "[a-c\\.]{0,4}";
+
+    prop_compose! {
+        fn in_bound()(
+            bound in "[a-c]*"
+        ) -> Bound {
+            Bound::Included(bound.as_bytes().to_vec())
+        }
+    }
+
+    prop_compose! {
+        fn ex_bound()(
+            bound in "[a-c]*"
+        ) -> Bound {
+            Bound::Excluded(bound.as_bytes().to_vec())
+        }
+    }
+
+    fn bound_strategy() -> BoxedStrategy<Bound> {
+        prop_oneof![Just(Bound::Unbounded), in_bound(), ex_bound(),].boxed()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+        #[test]
+        fn proptest_traversal(set in prop::collection::hash_set("[a-c]{0,3}", 0..39),
+                              r in REGEX_STRING,
+                              min in bound_strategy(),
+                              max in bound_strategy()) {
+            let mut vec: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
+            vec.sort();
+            test_range_with_aut_fn(vec.clone(), Regex::new(&r).unwrap(), min, max);
+        }
     }
 }
