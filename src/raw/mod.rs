@@ -18,9 +18,9 @@ option of specifying a merge strategy for output values.
 
 Most of the rest of the types are streams from set operations.
 */
+use std::cmp;
 use std::fmt;
 use std::ops::Deref;
-use std::{cmp, mem};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -1186,7 +1186,7 @@ impl Buffer {
         let new_cap = old_cap * 2;
         let mut new_buf = vec![0u8; new_cap].into_boxed_slice();
         new_buf[..old_cap].copy_from_slice(&self.buf[..old_cap]);
-        mem::replace(&mut self.buf, new_buf);
+        self.buf = new_buf;
     }
 
     fn push(&mut self, b: u8) {

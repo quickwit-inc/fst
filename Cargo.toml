@@ -24,17 +24,21 @@ path = "./benches/search.rs"
 test = false
 bench = true
 
+[features]
+default = ["regex"]
+regex = ["regex-syntax"]
+
 [dependencies]
 byteorder = "1"
-regex-syntax = "0.6"
+regex-syntax = { version = "0.8", optional = true }
 utf8-ranges = "1"
 
 [dev-dependencies]
-fnv = "1.0.5"
+fnv = "1.0.7"
 lazy_static = "1.4"
 quickcheck = { version = "0.7", default-features = false }
 rand = "0.5"
-proptest = "0.9.4"
+proptest = "1.4.0"
 
 [profile.release]
 debug = true

@@ -1,8 +1,6 @@
 use super::Error;
 use super::Inst;
-use regex_syntax::hir::{
-    Class, ClassUnicode, ClassUnicodeRange, Literal, Repetition, RepetitionKind, RepetitionRange,
-};
+use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange};
 use regex_syntax::hir::{Hir, HirKind};
 use utf8_ranges::{Utf8Sequence, Utf8Sequences};
 
@@ -27,24 +25,17 @@ impl Compiler {
 
     fn c(&mut self, hir: &Hir) -> Result<(), Error> {
         match hir.kind() {
-            HirKind::Anchor(_) => return Err(Error::NoEmpty),
-            HirKind::WordBoundary(_) => {
-                return Err(Error::NoWordBoundary);
-            }
-            HirKind::Literal(literal) => match *literal {
-                Literal::Byte(_) => return Err(Error::NoBytes),
-                Literal::Unicode(char) => {
-                    for seq in Utf8Sequences::new(char, char) {
-                        self.compile_utf8_ranges(&seq);
-                    }
+            HirKind::Literal(_literal) => {
+                for byte in _literal.0.iter().cloned() {
+                    self.push(Inst::Range(byte, byte));
                 }
-            },
+            }
             HirKind::Class(class) => match class {
                 Class::Bytes(_) => return Err(Error::NoBytes),
                 Class::Unicode(class_unicode) => self.compile_class(class_unicode)?,
             },
             HirKind::Empty => {}
-            HirKind::Group(group) => self.c(&group.hir)?,
+            HirKind::Capture(capture) => self.c(&capture.sub)?,
             HirKind::Concat(hirs) => {
                 for hir in hirs {
                     self.c(hir)?;
@@ -56,10 +47,10 @@ impl Compiler {
                 }
                 let mut jmps_to_end = vec![];
                 for e in &es[0..es.len() - 1] {
-                    let split = self.empty_split();
+                    let split = self.push_empty_split();
                     let j1 = self.insts.len();
                     self.c(e)?;
-                    jmps_to_end.push(self.empty_jump());
+                    jmps_to_end.push(self.push_empty_jump());
                     let j2 = self.insts.len();
                     self.set_split(split, j1, j2);
                 }
@@ -73,61 +64,39 @@ impl Compiler {
                 if repetition.greedy == false {
                     return Err(Error::NoLazy);
                 }
-                match &repetition.kind {
-                    RepetitionKind::ZeroOrOne => {
-                        let split = self.empty_split();
-                        let j1 = self.insts.len();
-                        self.c(&repetition.hir)?;
-                        let j2 = self.insts.len();
-                        self.set_split(split, j1, j2);
+                if let Some(max) = repetition.max {
+                    // Min / max
+                    let min = repetition.min;
+                    for _ in 0..min {
+                        self.c(&repetition.sub)?;
                     }
-                    RepetitionKind::ZeroOrMore => {
-                        let j1 = self.insts.len();
-                        let split = self.empty_split();
-                        let j2 = self.insts.len();
-                        self.c(&repetition.hir)?;
-                        let jmp = self.empty_jump();
-                        let j3 = self.insts.len();
+                    let (mut splits, mut starts) = (vec![], vec![]);
+                    for _ in min..max {
+                        splits.push(self.push_empty_split());
+                        starts.push(self.insts.len());
+                        self.c(&repetition.sub)?;
+                    }
+                    let end = self.insts.len();
+                    for (split, start) in splits.into_iter().zip(starts) {
+                        self.set_split(split, start, end);
+                    }
+                } else {
+                    // At least
+                    for _ in 0..repetition.min {
+                        self.c(&repetition.sub)?;
+                    }
+                    let j1 = self.insts.len();
+                    let split = self.push_empty_split();
+                    let j2 = self.insts.len();
+                    self.c(&repetition.sub)?;
+                    let jmp = self.push_empty_jump();
+                    let j3 = self.insts.len();
 
-                        self.set_jump(jmp, j1);
-                        self.set_split(split, j2, j3);
-                    }
-                    RepetitionKind::OneOrMore => {
-                        let j1 = self.insts.len();
-                        self.c(&repetition.hir)?;
-                        let split = self.empty_split();
-                        let j2 = self.insts.len();
-                        self.set_split(split, j1, j2);
-                    }
-                    RepetitionKind::Range(range) => match *range {
-                        RepetitionRange::AtLeast(min) | RepetitionRange::Exactly(min) => {
-                            for _ in 0..min {
-                                self.c(&repetition.hir)?;
-                            }
-                            self.c(&Hir::repetition(Repetition {
-                                kind: RepetitionKind::ZeroOrMore,
-                                greedy: true,
-                                hir: repetition.hir.clone(),
-                            }))?;
-                        }
-                        RepetitionRange::Bounded(min, max) => {
-                            for _ in 0..min {
-                                self.c(&repetition.hir)?;
-                            }
-                            let (mut splits, mut starts) = (vec![], vec![]);
-                            for _ in min..max {
-                                splits.push(self.empty_split());
-                                starts.push(self.insts.len());
-                                self.c(&repetition.hir)?;
-                            }
-                            let end = self.insts.len();
-                            for (split, start) in splits.into_iter().zip(starts) {
-                                self.set_split(split, start, end);
-                            }
-                        }
-                    },
+                    self.set_jump(jmp, j1);
+                    self.set_split(split, j2, j3);
                 }
             }
+            HirKind::Look(_) => return Err(Error::NoEmpty),
         }
         self.check_size()
     }
@@ -138,10 +107,10 @@ impl Compiler {
         }
         let mut jmps = vec![];
         for &r in &class.ranges()[0..class.ranges().len() - 1] {
-            let split = self.empty_split();
+            let split = self.push_empty_split();
             let j1 = self.insts.len();
             self.compile_class_range(r)?;
-            jmps.push(self.empty_jump());
+            jmps.push(self.push_empty_jump());
             let j2 = self.insts.len();
             self.set_split(split, j1, j2);
         }
@@ -158,10 +127,10 @@ impl Compiler {
         let mut jmps = vec![];
         let mut utf8_ranges = it.next().expect("non-empty char class");
         while it.peek().is_some() {
-            let split = self.empty_split();
+            let split = self.push_empty_split();
             let j1 = self.insts.len();
             self.compile_utf8_ranges(&utf8_ranges);
-            jmps.push(self.empty_jump());
+            jmps.push(self.push_empty_jump());
             let j2 = self.insts.len();
             self.set_split(split, j1, j2);
             utf8_ranges = it.next().unwrap(); // because peek says so
@@ -200,7 +169,7 @@ impl Compiler {
     /// the index of that instruction. (The index can then be used to "patch"
     /// the actual locations of the split in later.)
     #[inline]
-    fn empty_split(&mut self) -> usize {
+    fn push_empty_split(&mut self) -> usize {
         self.insts.push(Inst::Split(0, 0));
         self.insts.len() - 1
     }
@@ -221,7 +190,7 @@ impl Compiler {
     /// Appends an *empty* `Jump` instruction to the program and returns the
     /// index of that instruction.
     #[inline]
-    fn empty_jump(&mut self) -> usize {
+    fn push_empty_jump(&mut self) -> usize {
         self.insts.push(Inst::Jump(0));
         self.insts.len() - 1
     }
