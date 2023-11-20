@@ -25,7 +25,7 @@ test = false
 bench = true
 
 [features]
-default = []
+default = ["regex"]
 regex = ["regex-syntax"]
 
 [dependencies]

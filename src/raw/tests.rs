@@ -1019,6 +1019,28 @@ test_range_with_aut! {
     output: vec!["c"],
 }
 
+// Exactly 2 times
+#[cfg(feature = "regex")]
+test_range_with_aut! {
+    fst_range_aut_8,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 1,
+    aut: Regex::new("(?:ab){2}").unwrap(),
+    input: vec!["ab", "abaa", "abab", "ababab"],
+    output: vec!["abab"],
+}
+
+// At least 2 times
+#[cfg(feature = "regex")]
+test_range_with_aut! {
+    fst_range_aut_9,
+    min: Bound::Unbounded, max: Bound::Unbounded,
+    imin: 0, imax: 2,
+    aut: Regex::new("(?:ab){2,}").unwrap(),
+    input: vec!["ab", "abaa", "abab", "ababab"],
+    output: vec!["abab", "ababab"],
+}
+
 use proptest::prelude::*;
 
 const REGEX_STRING: &'static str = "[a-c\\.]{0,4}";
