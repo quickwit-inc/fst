@@ -6,7 +6,7 @@ description = """
 This is a tantivy-specific fork from the fst crate from Burntsushi. (Please use the fst crate instead.)
 """
 documentation = "https://docs.rs/tantivy-fst"
-repository = "https://github.com/tantivy-search/fst"
+repository = "https://github.com/quickwit-inc/fst"
 readme = "README.md"
 keywords = ["donotuseme"]
 license = "Unlicense/MIT"
