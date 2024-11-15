@@ -29,9 +29,6 @@ pub use self::error::Error;
 /// 2. Word boundaries (i.e., `\b`). Because such things are hard to do in
 ///    a deterministic finite automaton, but not impossible. As such, these
 ///    may be allowed some day.
-/// 3. Other zero width assertions like `^` and `$`. These are easier to
-///    support than word boundaries, but are still tricky and usually aren't
-///    as useful when searching dictionaries.
 ///
 /// Otherwise, the [full syntax of the `regex`
 /// crate](http://doc.rust-lang.org/regex/regex/index.html#syntax)
@@ -58,12 +55,58 @@ pub struct Regex {
     dfa: dfa::Dfa,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_regex(re: &str, input: &str) -> bool {
+        let regex = Regex::new(re).unwrap();
+        let mut state = regex.start();
+        for b in input.as_bytes() {
+            state = regex.accept(&state, *b);
+            if !regex.can_match(&state) {
+                return false;
+            }
+        }
+        regex.is_match(&state)
+    }
+
+    #[test]
+    fn test_start_text() {
+        assert!(run_regex(r"^abc", "abc"));
+        assert!(run_regex(r"^abc.*", "abcdef"));
+        assert!(!run_regex(r"^abc", "defabc"));
+    }
+
+    #[test]
+    fn test_end_text() {
+        assert!(run_regex(r"abc$", "abc"));
+        assert!(run_regex(r".*abc$", "defabc"));
+        assert!(!run_regex(r"abc$", "abcdef"));
+    }
+
+    #[test]
+    fn test_start_and_end_text() {
+        assert!(run_regex(r"^abc$", "abc"));
+        assert!(!run_regex(r"^abc$", "defabc"));
+        assert!(!run_regex(r"^abc$", "abcdef"));
+    }
+
+    #[test]
+    fn test_empty_string() {
+        assert!(run_regex(r"^$", ""));
+        assert!(!run_regex(r"^$", "a"));
+    }
+}
+
 #[derive(Eq, PartialEq)]
 pub enum Inst {
     Match,
     Jump(usize),
     Split(usize, usize),
     Range(u8, u8),
+    StartText,
+    EndText,
 }
 
 impl Regex {
@@ -93,26 +136,31 @@ impl Regex {
 }
 
 impl Automaton for Regex {
-    type State = Option<usize>;
+    type State = (Option<usize>, usize); // (state index, position)
 
     #[inline]
-    fn start(&self) -> Option<usize> {
-        Some(0)
+    fn start(&self) -> Self::State {
+        (Some(0), 0)
     }
 
     #[inline]
-    fn is_match(&self, state: &Option<usize>) -> bool {
-        state.map(|state| self.dfa.is_match(state)).unwrap_or(false)
+    fn is_match(&self, state: &Self::State) -> bool {
+        state
+            .0
+            .map(|state| self.dfa.is_match(state))
+            .unwrap_or(false)
     }
 
     #[inline]
-    fn can_match(&self, state: &Option<usize>) -> bool {
-        state.is_some()
+    fn can_match(&self, state: &Self::State) -> bool {
+        state.0.is_some()
     }
 
     #[inline]
-    fn accept(&self, state: &Option<usize>, byte: u8) -> Option<usize> {
-        state.and_then(|state| self.dfa.accept(state, byte))
+    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
+        let (si, pos) = *state;
+        let si = si.and_then(|si| self.dfa.accept(si, byte));
+        (si, pos + 1)
     }
 }
 
@@ -131,6 +179,8 @@ impl fmt::Debug for Inst {
             Jump(ip) => write!(f, "JUMP {}", ip),
             Split(ip1, ip2) => write!(f, "SPLIT {}, {}", ip1, ip2),
             Range(s, e) => write!(f, "RANGE {:X}-{:X}", s, e),
+            StartText => write!(f, "START"),
+            EndText => write!(f, "END"),
         }
     }
 }

@@ -96,7 +96,17 @@ impl Compiler {
                     self.set_split(split, j2, j3);
                 }
             }
-            HirKind::Look(_) => return Err(Error::NoEmpty),
+            HirKind::Look(look) => {
+                match look {
+                    regex_syntax::hir::Look::Start => {
+                        self.push(Inst::StartText);
+                    }
+                    regex_syntax::hir::Look::End => {
+                        self.push(Inst::EndText);
+                    }
+                    _ => return Err(Error::NoWordBoundary),
+                }
+            }
         }
         self.check_size()
     }
