@@ -69,7 +69,7 @@ impl DfaBuilder {
         for &ip in &self.dfa.states[state].insts {
             cur.add(ip);
         }
-        self.dfa.run(cur, next, byte);
+        self.dfa.run(cur, next, Some(byte), false, false);
         let next_state = self.cached_state(next);
         self.dfa.states[state].next[byte as usize] = next_state;
         next_state
@@ -92,6 +92,7 @@ impl DfaBuilder {
                     is_match = true;
                     insts.push(ip);
                 }
+                StartText | EndText => insts.push(ip),
             }
         }
         if insts.is_empty() {
@@ -134,10 +135,23 @@ impl Dfa {
                 self.add(set, ip1);
                 self.add(set, ip2);
             }
+            StartText => {
+                self.add(set, ip + 1);
+            }
+            EndText => {
+                self.add(set, ip + 1);
+            }
         }
     }
 
-    fn run(&self, from: &SparseSet, to: &mut SparseSet, byte: u8) -> bool {
+    fn run(
+        &self,
+        from: &SparseSet,
+        to: &mut SparseSet,
+        byte: Option<u8>,
+        at_start: bool,
+        at_end: bool,
+    ) -> bool {
         use super::Inst::*;
         to.clear();
         let mut is_match = false;
@@ -147,7 +161,19 @@ impl Dfa {
                 Jump(_) | Split(_, _) => {}
                 Match => is_match = true,
                 Range(s, e) => {
-                    if s <= byte && byte <= e {
+                    if let Some(b) = byte {
+                        if s <= b && b <= e {
+                            self.add(to, ip + 1);
+                        }
+                    }
+                }
+                StartText => {
+                    if at_start {
+                        self.add(to, ip + 1);
+                    }
+                }
+                EndText => {
+                    if at_end {
                         self.add(to, ip + 1);
                     }
                 }
