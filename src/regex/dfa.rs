@@ -21,8 +21,6 @@ struct State {
     insts: Vec<usize>,
     next: [Option<usize>; 256],
     is_match: bool,
-    at_start: bool,
-    at_end: bool,
 }
 
 impl DfaBuilder {
@@ -107,8 +105,6 @@ impl DfaBuilder {
                     insts,
                     next: [None; 256],
                     is_match,
-                    at_start: false,
-                    at_end: false,
                 });
                 *v.insert(self.dfa.states.len() - 1)
             }
@@ -148,7 +144,14 @@ impl Dfa {
         }
     }
 
-    fn run(&self, from: &SparseSet, to: &mut SparseSet, byte: Option<u8>, at_start: bool, at_end: bool) -> bool {
+    fn run(
+        &self,
+        from: &SparseSet,
+        to: &mut SparseSet,
+        byte: Option<u8>,
+        at_start: bool,
+        at_end: bool,
+    ) -> bool {
         use super::Inst::*;
         to.clear();
         let mut is_match = false;
