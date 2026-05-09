@@ -37,6 +37,15 @@ pub enum Error {
     ///
     /// This restriction may be lifted in the future.
     NoBytes,
+    /// The configured wall-clock deadline was reached during regex
+    /// compilation or DFA construction.
+    ///
+    /// Returned only by APIs that accept an explicit deadline (such as
+    /// [`Regex::new_with_deadline`](crate::Regex::new_with_deadline)).
+    /// Callers can use this to bound the latency of compiling adversarial
+    /// patterns whose NFA-to-DFA expansion is expensive but still finite
+    /// under the existing `STATE_LIMIT`/size-limit guards.
+    DeadlineExceeded,
 }
 
 impl From<regex_syntax::Error> for Error {
@@ -77,6 +86,10 @@ impl fmt::Display for Error {
                  (hopefully temporary)."
             ),
             NoBytes => write!(f, "Byte literals are not allowed."),
+            DeadlineExceeded => write!(
+                f,
+                "Regex compilation deadline exceeded."
+            ),
         }
     }
 }
