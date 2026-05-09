@@ -1,11 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::time::Instant;
 
 use super::sparse::SparseSet;
 use super::Error;
 use super::Inst;
 
 const STATE_LIMIT: usize = 1_000; // currently at least 2MB >_<
+
+/// Number of inner-loop transitions between deadline checks.
+///
+/// `Instant::now()` on Linux costs ~20ns; checking once per state-byte would
+/// be ~5MB of clock reads for a `STATE_LIMIT=1000` build. Batching by
+/// `DEADLINE_CHECK_INTERVAL` keeps the overhead under 1% while still bounding
+/// the wall-clock overshoot to a few hundred microseconds in the worst case.
+const DEADLINE_CHECK_INTERVAL: usize = 1024;
 
 pub struct DfaBuilder {
     dfa: Dfa,
@@ -34,13 +43,21 @@ impl DfaBuilder {
         }
     }
 
-    pub fn build(mut self) -> Result<Dfa, Error> {
+    pub fn build(self) -> Result<Dfa, Error> {
+        self.build_with_deadline(None)
+    }
+
+    pub fn build_with_deadline(
+        mut self,
+        deadline: Option<Instant>,
+    ) -> Result<Dfa, Error> {
         let mut cur = SparseSet::new(self.dfa.insts.len());
         let mut next = SparseSet::new(self.dfa.insts.len());
 
         self.dfa.add(&mut cur, 0);
         let mut states = vec![self.cached_state(&cur).unwrap()];
         let mut seen = HashSet::new();
+        let mut transitions_since_check: usize = 0;
         while let Some(s) = states.pop() {
             for b in 0..256 {
                 let ns = self.run_state(&mut cur, &mut next, s, b as u8);
@@ -52,6 +69,15 @@ impl DfaBuilder {
                 }
                 if self.dfa.states.len() > STATE_LIMIT {
                     return Err(Error::TooManyStates(STATE_LIMIT));
+                }
+                transitions_since_check += 1;
+                if transitions_since_check >= DEADLINE_CHECK_INTERVAL {
+                    transitions_since_check = 0;
+                    if let Some(d) = deadline {
+                        if Instant::now() >= d {
+                            return Err(Error::DeadlineExceeded);
+                        }
+                    }
                 }
             }
         }
