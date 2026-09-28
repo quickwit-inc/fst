@@ -5,11 +5,13 @@ use super::sparse::SparseSet;
 use super::Error;
 use super::Inst;
 
-const STATE_LIMIT: usize = 1_000; // currently at least 2MB >_<
+/// Default cap on the number of DFA states; each state costs at least 2KB.
+pub(crate) const DEFAULT_STATE_LIMIT: usize = 1_000;
 
 pub struct DfaBuilder {
     dfa: Dfa,
     cache: HashMap<Vec<usize>, usize>,
+    state_limit: usize,
 }
 
 pub struct Dfa {
@@ -24,13 +26,14 @@ struct State {
 }
 
 impl DfaBuilder {
-    pub fn new(insts: Vec<Inst>) -> Self {
+    pub fn new(insts: Vec<Inst>, state_limit: usize) -> Self {
         DfaBuilder {
             dfa: Dfa {
                 insts,
                 states: Vec::with_capacity(16),
             },
             cache: HashMap::with_capacity(1024),
+            state_limit,
         }
     }
 
@@ -50,8 +53,8 @@ impl DfaBuilder {
                         states.push(ns);
                     }
                 }
-                if self.dfa.states.len() > STATE_LIMIT {
-                    return Err(Error::TooManyStates(STATE_LIMIT));
+                if self.dfa.states.len() > self.state_limit {
+                    return Err(Error::TooManyStates(self.state_limit));
                 }
             }
         }
