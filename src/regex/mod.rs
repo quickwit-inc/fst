@@ -78,13 +78,23 @@ impl Regex {
     /// used with the `search` method of any finite state transducer.
     #[inline]
     pub fn new(re: &str) -> Result<Regex, Error> {
-        Regex::with_size_limit(10 * (1 << 20), re)
+        Regex::with_state_limit(re, dfa::DEFAULT_STATE_LIMIT)
     }
 
-    fn with_size_limit(size: usize, re: &str) -> Result<Regex, Error> {
+    /// Like [`Regex::new`], but caps the automaton at `state_limit` DFA states
+    /// instead of the default 1,000.
+    ///
+    /// Each state costs at least 2KB while the automaton is built, and building
+    /// time grows with the number of states. Past the cap, an
+    /// `Error::TooManyStates` is returned.
+    pub fn with_state_limit(re: &str, state_limit: usize) -> Result<Regex, Error> {
+        Regex::with_limits(10 * (1 << 20), state_limit, re)
+    }
+
+    fn with_limits(size: usize, state_limit: usize, re: &str) -> Result<Regex, Error> {
         let hir = regex_syntax::Parser::new().parse(re)?;
         let insts = self::compile::Compiler::new(size).compile(&hir)?;
-        let dfa = self::dfa::DfaBuilder::new(insts).build()?;
+        let dfa = self::dfa::DfaBuilder::new(insts, state_limit).build()?;
         Ok(Regex {
             original: re.to_owned(),
             dfa,
@@ -132,5 +142,30 @@ impl fmt::Debug for Inst {
             Split(ip1, ip2) => write!(f, "SPLIT {}, {}", ip1, ip2),
             Range(s, e) => write!(f, "RANGE {:X}-{:X}", s, e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, Regex};
+
+    // `[ab]*a[ab]{10}` has to remember the last 11 bytes: 2^11 DFA states.
+    const EXPONENTIAL: &str = "[ab]*a[ab]{10}";
+
+    #[test]
+    fn default_state_limit_rejects_large_automaton() {
+        assert!(matches!(
+            Regex::new(EXPONENTIAL),
+            Err(Error::TooManyStates(1_000))
+        ));
+    }
+
+    #[test]
+    fn raised_state_limit_accepts_large_automaton() {
+        assert!(Regex::with_state_limit(EXPONENTIAL, 4_096).is_ok());
+        assert!(matches!(
+            Regex::with_state_limit(EXPONENTIAL, 2_000),
+            Err(Error::TooManyStates(2_000))
+        ));
     }
 }
