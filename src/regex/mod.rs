@@ -6,6 +6,8 @@ mod compile;
 mod dfa;
 mod error;
 mod sparse;
+#[cfg(test)]
+mod tests;
 
 pub use self::error::Error;
 
@@ -58,12 +60,12 @@ pub struct Regex {
     dfa: dfa::Dfa,
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Inst {
     Match,
-    Jump(usize),
-    Split(usize, usize),
-    Range(u8, u8),
+    Fail,
+    Or(usize, usize),
+    Range { start: u8, end: u8, next: usize },
 }
 
 impl Regex {
@@ -83,8 +85,8 @@ impl Regex {
 
     fn with_size_limit(size: usize, re: &str) -> Result<Regex, Error> {
         let hir = regex_syntax::Parser::new().parse(re)?;
-        let insts = self::compile::Compiler::new(size).compile(&hir)?;
-        let dfa = self::dfa::DfaBuilder::new(insts).build()?;
+        let nfa = self::compile::Compiler::new(size).compile(&hir)?;
+        let dfa = self::dfa::DfaBuilder::new(nfa).build()?;
         Ok(Regex {
             original: re.to_owned(),
             dfa,
@@ -97,7 +99,7 @@ impl Automaton for Regex {
 
     #[inline]
     fn start(&self) -> Option<usize> {
-        Some(0)
+        self.dfa.start()
     }
 
     #[inline]
@@ -128,9 +130,9 @@ impl fmt::Debug for Inst {
         use self::Inst::*;
         match *self {
             Match => write!(f, "Match"),
-            Jump(ip) => write!(f, "JUMP {}", ip),
-            Split(ip1, ip2) => write!(f, "SPLIT {}, {}", ip1, ip2),
-            Range(s, e) => write!(f, "RANGE {:X}-{:X}", s, e),
+            Fail => write!(f, "Fail"),
+            Or(ip1, ip2) => write!(f, "OR {}, {}", ip1, ip2),
+            Range { start, end, next } => write!(f, "RANGE {:X}-{:X} -> {}", start, end, next),
         }
     }
 }
