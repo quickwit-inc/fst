@@ -1,177 +1,221 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
 use super::sparse::SparseSet;
 use super::Error;
 use super::Inst;
 
-const STATE_LIMIT: usize = 1_000; // currently at least 2MB >_<
+const STATE_LIMIT: usize = 1_000;
+const NO_TRANSITION: u16 = u16::MAX;
+
+/// Partitions `0..=255` into contiguous byte ranges split at every
+/// `Inst::Range` boundary in the NFA.
+///
+/// Every byte inside a single range triggers the exact same NFA transitions.
+/// `DfaBuilder` simulates only each range's starting byte instead of all 256
+/// bytes, and `Dfa` stores one transition column per range.
+struct ByteRanges {
+    byte_to_range: [u8; 256],
+    range_starts: Vec<u8>,
+}
+
+impl ByteRanges {
+    fn from_insts(insts: &[Inst]) -> Self {
+        let mut boundaries = [false; 257];
+        for inst in insts {
+            if let Inst::Range(start, end) = *inst {
+                boundaries[start as usize] = true;
+                boundaries[end as usize + 1] = true;
+            }
+        }
+        let mut byte_to_range = [0u8; 256];
+        let mut range_starts = vec![0u8];
+        for byte in 1..256usize {
+            if boundaries[byte] {
+                range_starts.push(byte as u8);
+            }
+            byte_to_range[byte] = (range_starts.len() - 1) as u8;
+        }
+        ByteRanges {
+            byte_to_range,
+            range_starts,
+        }
+    }
+}
 
 pub struct DfaBuilder {
-    dfa: Dfa,
-    cache: HashMap<Vec<usize>, usize>,
-}
-
-pub struct Dfa {
     insts: Vec<Inst>,
-    states: Vec<State>,
 }
 
-struct State {
-    insts: Vec<usize>,
-    next: [Option<usize>; 256],
-    is_match: bool,
+struct StateTable {
+    num_byte_ranges: usize,
+    cache: HashMap<Vec<usize>, u16>,
+    state_ips: Vec<Vec<usize>>,
+    is_match: Vec<bool>,
+    transitions: Vec<u16>,
+}
+
+impl StateTable {
+    fn new(num_byte_ranges: usize) -> Self {
+        StateTable {
+            num_byte_ranges,
+            cache: HashMap::with_capacity(64),
+            state_ips: Vec::with_capacity(16),
+            is_match: Vec::with_capacity(16),
+            transitions: Vec::with_capacity(16 * num_byte_ranges),
+        }
+    }
+
+    fn get_or_add_state(&mut self, ips: &[usize], matched: bool) -> Result<u16, Error> {
+        if let Some(&existing_state) = self.cache.get(ips) {
+            return Ok(existing_state);
+        }
+        if self.state_ips.len() >= STATE_LIMIT {
+            return Err(Error::TooManyStates(STATE_LIMIT));
+        }
+        let new_state = self.state_ips.len() as u16;
+        self.cache.insert(ips.to_vec(), new_state);
+        self.state_ips.push(ips.to_vec());
+        self.is_match.push(matched);
+        self.transitions
+            .resize(self.transitions.len() + self.num_byte_ranges, NO_TRANSITION);
+        Ok(new_state)
+    }
+}
+
+/// Compact DFA backed by a flat `u16` transition table indexed by
+/// `state * num_byte_ranges + byte_to_range[byte]`.
+///
+/// `u16` holds every valid state index because `STATE_LIMIT` is 1,000, leaving
+/// `u16::MAX` (`NO_TRANSITION`) for missing transitions.
+pub struct Dfa {
+    byte_to_range: [u8; 256],
+    is_match: Vec<bool>,
+    transitions: Vec<u16>,
+    num_byte_ranges: usize,
 }
 
 impl DfaBuilder {
     pub fn new(insts: Vec<Inst>) -> Self {
-        DfaBuilder {
-            dfa: Dfa {
-                insts,
-                states: Vec::with_capacity(16),
-            },
-            cache: HashMap::with_capacity(1024),
-        }
+        DfaBuilder { insts }
     }
 
-    pub fn build(mut self) -> Result<Dfa, Error> {
-        let mut cur = SparseSet::new(self.dfa.insts.len());
-        let mut next = SparseSet::new(self.dfa.insts.len());
+    pub fn build(self) -> Result<Dfa, Error> {
+        let byte_ranges = ByteRanges::from_insts(&self.insts);
+        let num_byte_ranges = byte_ranges.range_starts.len();
 
-        self.dfa.add(&mut cur, 0);
-        let mut states = vec![self.cached_state(&cur).unwrap()];
-        let mut seen = HashSet::new();
-        while let Some(s) = states.pop() {
-            for b in 0..256 {
-                let ns = self.run_state(&mut cur, &mut next, s, b as u8);
-                if let Some(ns) = ns {
-                    if !seen.contains(&ns) {
-                        seen.insert(ns);
-                        states.push(ns);
+        let mut table = StateTable::new(num_byte_ranges);
+        let mut visited_ips = SparseSet::new(self.insts.len());
+        let mut pending_ips = Vec::new();
+        let mut candidate_ips = Vec::new();
+
+        let start_is_match = expand_epsilon(
+            &self.insts,
+            &mut visited_ips,
+            &mut pending_ips,
+            &mut candidate_ips,
+            0,
+        );
+        if !candidate_ips.is_empty() {
+            // Sort so identical sets of reachable instructions hash to the
+            // same `cache` key regardless of `Inst::Split` traversal order.
+            candidate_ips.sort_unstable();
+            table.get_or_add_state(&candidate_ips, start_is_match)?;
+        }
+
+        let mut state = 0;
+        while state < table.state_ips.len() {
+            for (range_id, &range_start) in byte_ranges.range_starts.iter().enumerate() {
+                visited_ips.clear();
+                candidate_ips.clear();
+                let mut next_is_match = false;
+                for &ip in &table.state_ips[state] {
+                    if let Inst::Range(start, end) = self.insts[ip] {
+                        if start <= range_start && range_start <= end {
+                            next_is_match |= expand_epsilon(
+                                &self.insts,
+                                &mut visited_ips,
+                                &mut pending_ips,
+                                &mut candidate_ips,
+                                ip + 1,
+                            );
+                        }
                     }
                 }
-                if self.dfa.states.len() > STATE_LIMIT {
-                    return Err(Error::TooManyStates(STATE_LIMIT));
+                if candidate_ips.is_empty() {
+                    continue;
                 }
+                candidate_ips.sort_unstable();
+                let next_state = table.get_or_add_state(&candidate_ips, next_is_match)?;
+                table.transitions[state * num_byte_ranges + range_id] = next_state;
             }
+            state += 1;
         }
-        Ok(self.dfa)
-    }
 
-    fn run_state(
-        &mut self,
-        cur: &mut SparseSet,
-        next: &mut SparseSet,
-        state: usize,
-        byte: u8,
-    ) -> Option<usize> {
-        cur.clear();
-        for &ip in &self.dfa.states[state].insts {
-            cur.add(ip);
-        }
-        self.dfa.run(cur, next, byte);
-        let next_state = self.cached_state(next);
-        self.dfa.states[state].next[byte as usize] = next_state;
-        next_state
-    }
-
-    fn cached_state(&mut self, set: &SparseSet) -> Option<usize> {
-        use super::Inst::*;
-        use std::collections::hash_map::Entry;
-
-        // There are probably many ways to optimize this routine. ---AG
-
-        let mut insts = vec![];
-        let mut is_match = false;
-        for i in 0..set.len() {
-            let ip = set.get(i);
-            match self.dfa.insts[ip] {
-                Jump(_) | Split(_, _) => {}
-                Range(_, _) => insts.push(ip),
-                Match => {
-                    is_match = true;
-                    insts.push(ip);
-                }
-            }
-        }
-        if insts.is_empty() {
-            return None;
-        }
-        Some(match self.cache.entry(insts.clone()) {
-            Entry::Occupied(v) => *v.get(),
-            Entry::Vacant(v) => {
-                self.dfa.states.push(State {
-                    insts,
-                    next: [None; 256],
-                    is_match,
-                });
-                *v.insert(self.dfa.states.len() - 1)
-            }
+        Ok(Dfa {
+            byte_to_range: byte_ranges.byte_to_range,
+            is_match: table.is_match,
+            transitions: table.transitions,
+            num_byte_ranges,
         })
     }
 }
 
+/// Follows all `Inst::Jump` and `Inst::Split` branches from `start_ip` using an
+/// explicit stack, collecting every reached `Range` and `Match` instruction
+/// index into `out_ips` and returning whether `Inst::Match` was reached.
+fn expand_epsilon(
+    insts: &[Inst],
+    visited_ips: &mut SparseSet,
+    pending_ips: &mut Vec<usize>,
+    out_ips: &mut Vec<usize>,
+    start_ip: usize,
+) -> bool {
+    let mut is_match = false;
+    pending_ips.push(start_ip);
+    while let Some(ip) = pending_ips.pop() {
+        if visited_ips.contains(ip) {
+            continue;
+        }
+        visited_ips.add(ip);
+        match insts[ip] {
+            Inst::Jump(next) => pending_ips.push(next),
+            Inst::Split(ip1, ip2) => {
+                pending_ips.push(ip2);
+                pending_ips.push(ip1);
+            }
+            Inst::Range(_, _) => out_ips.push(ip),
+            Inst::Match => {
+                is_match = true;
+                out_ips.push(ip);
+            }
+        }
+    }
+    is_match
+}
+
 impl Dfa {
-    pub fn is_match(&self, si: usize) -> bool {
-        self.states[si].is_match
+    #[inline]
+    pub fn is_match(&self, state: usize) -> bool {
+        self.is_match[state]
     }
 
-    pub fn accept(&self, si: usize, byte: u8) -> Option<usize> {
-        self.states[si].next[byte as usize]
-    }
-
-    fn add(&self, set: &mut SparseSet, ip: usize) {
-        use super::Inst::*;
-
-        if set.contains(ip) {
-            return;
-        }
-        set.add(ip);
-        match self.insts[ip] {
-            Match | Range(_, _) => {}
-            Jump(ip) => self.add(set, ip),
-            Split(ip1, ip2) => {
-                self.add(set, ip1);
-                self.add(set, ip2);
-            }
-        }
-    }
-
-    fn run(&self, from: &SparseSet, to: &mut SparseSet, byte: u8) -> bool {
-        use super::Inst::*;
-        to.clear();
-        let mut is_match = false;
-        for i in 0..from.len() {
-            let ip = from.get(i);
-            match self.insts[ip] {
-                Jump(_) | Split(_, _) => {}
-                Match => is_match = true,
-                Range(s, e) => {
-                    if s <= byte && byte <= e {
-                        self.add(to, ip + 1);
-                    }
-                }
-            }
-        }
-        is_match
+    #[inline]
+    pub fn accept(&self, state: usize, byte: u8) -> Option<usize> {
+        let range_id = self.byte_to_range[byte as usize] as usize;
+        let next = self.transitions[state * self.num_byte_ranges + range_id];
+        (next != NO_TRANSITION).then_some(next as usize)
     }
 }
 
 impl fmt::Debug for Dfa {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (i, inst) in self.insts.iter().enumerate() {
-            writeln!(f, "{:03} {:?}", i, inst)?;
-        }
-        writeln!(f, "------------")?;
-        for (i, state) in self.states.iter().enumerate() {
-            if state.is_match {
-                writeln!(f, "{:03}* {:?}", i, state.insts)?;
-            } else {
-                writeln!(f, "{:03}  {:?}", i, state.insts)?;
-            }
-            for j in 0..256 {
-                if let Some(si) = state.next[j] {
-                    writeln!(f, "{:03}   {:X} => {}", i, j, si)?;
+        for (state, &matched) in self.is_match.iter().enumerate() {
+            let marker = if matched { "*" } else { " " };
+            writeln!(f, "{:03}{} ", state, marker)?;
+            for byte in 0..256usize {
+                if let Some(next) = self.accept(state, byte as u8) {
+                    writeln!(f, "{:03}   {:X} => {}", state, byte, next)?;
                 }
             }
         }
