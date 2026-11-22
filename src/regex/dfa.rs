@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use super::compile::Nfa;
 use super::sparse::SparseSet;
 use super::Error;
 use super::Inst;
@@ -9,6 +10,7 @@ const STATE_LIMIT: usize = 1_000; // currently at least 2MB >_<
 
 pub struct DfaBuilder {
     dfa: Dfa,
+    start: usize,
     cache: HashMap<Vec<usize>, usize>,
 }
 
@@ -24,12 +26,13 @@ struct State {
 }
 
 impl DfaBuilder {
-    pub fn new(insts: Vec<Inst>) -> Self {
+    pub fn new(nfa: Nfa) -> Self {
         DfaBuilder {
             dfa: Dfa {
-                insts,
+                insts: nfa.insts,
                 states: Vec::with_capacity(16),
             },
+            start: nfa.start,
             cache: HashMap::with_capacity(1024),
         }
     }
@@ -38,9 +41,13 @@ impl DfaBuilder {
         let mut cur = SparseSet::new(self.dfa.insts.len());
         let mut next = SparseSet::new(self.dfa.insts.len());
 
-        self.dfa.add(&mut cur, 0);
-        let mut states = vec![self.cached_state(&cur).unwrap()];
+        self.dfa.add(&mut cur, self.start);
+        let Some(start_state) = self.cached_state(&cur) else {
+            return Ok(self.dfa);
+        };
+        let mut states = vec![start_state];
         let mut seen = HashSet::new();
+        seen.insert(start_state);
         while let Some(s) = states.pop() {
             for b in 0..256 {
                 let ns = self.run_state(&mut cur, &mut next, s, b as u8);
@@ -86,8 +93,8 @@ impl DfaBuilder {
         for i in 0..set.len() {
             let ip = set.get(i);
             match self.dfa.insts[ip] {
-                Jump(_) | Split(_, _) => {}
-                Range(_, _) => insts.push(ip),
+                Fail | Or(_, _) => {}
+                Range { .. } => insts.push(ip),
                 Match => {
                     is_match = true;
                     insts.push(ip);
@@ -97,6 +104,9 @@ impl DfaBuilder {
         if insts.is_empty() {
             return None;
         }
+        // Sort so identical sets of reachable instructions hash to the same
+        // `cache` key regardless of `Inst::Or` traversal order.
+        insts.sort_unstable();
         Some(match self.cache.entry(insts.clone()) {
             Entry::Occupied(v) => *v.get(),
             Entry::Vacant(v) => {
@@ -112,6 +122,10 @@ impl DfaBuilder {
 }
 
 impl Dfa {
+    pub fn start(&self) -> Option<usize> {
+        (!self.states.is_empty()).then_some(0)
+    }
+
     pub fn is_match(&self, si: usize) -> bool {
         self.states[si].is_match
     }
@@ -120,19 +134,28 @@ impl Dfa {
         self.states[si].next[byte as usize]
     }
 
-    fn add(&self, set: &mut SparseSet, ip: usize) {
+    #[cfg(test)]
+    pub fn num_states(&self) -> usize {
+        self.states.len()
+    }
+
+    /// Follows all `Inst::Or` branches from `start_ip` using an explicit stack
+    /// so long alternation chains avoid recursion stack overflow.
+    fn add(&self, set: &mut SparseSet, start_ip: usize) {
         use super::Inst::*;
 
-        if set.contains(ip) {
-            return;
-        }
-        set.add(ip);
-        match self.insts[ip] {
-            Match | Range(_, _) => {}
-            Jump(ip) => self.add(set, ip),
-            Split(ip1, ip2) => {
-                self.add(set, ip1);
-                self.add(set, ip2);
+        let mut pending_ips = vec![start_ip];
+        while let Some(ip) = pending_ips.pop() {
+            if set.contains(ip) {
+                continue;
+            }
+            set.add(ip);
+            match self.insts[ip] {
+                Match | Fail | Range { .. } => {}
+                Or(ip1, ip2) => {
+                    pending_ips.push(ip2);
+                    pending_ips.push(ip1);
+                }
             }
         }
     }
@@ -144,11 +167,11 @@ impl Dfa {
         for i in 0..from.len() {
             let ip = from.get(i);
             match self.insts[ip] {
-                Jump(_) | Split(_, _) => {}
+                Fail | Or(_, _) => {}
                 Match => is_match = true,
-                Range(s, e) => {
-                    if s <= byte && byte <= e {
-                        self.add(to, ip + 1);
+                Range { start, end, next } => {
+                    if start <= byte && byte <= end {
+                        self.add(to, next);
                     }
                 }
             }

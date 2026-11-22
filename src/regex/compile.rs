@@ -1,152 +1,233 @@
-use super::Error;
-use super::Inst;
-use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange};
-use regex_syntax::hir::{Hir, HirKind};
-use utf8_ranges::{Utf8Sequence, Utf8Sequences};
+use std::collections::HashMap;
 
-pub struct Compiler {
-    size_limit: usize,
-    insts: Vec<Inst>,
+use regex_syntax::hir::{Class, Hir, HirKind};
+use utf8_ranges::Utf8Sequences;
+
+use super::{Error, Inst};
+
+pub(super) const MATCH_IP: usize = 0;
+const FAIL_IP: usize = 1;
+
+#[inline]
+fn strip_outer_captures(mut hir: &Hir) -> &Hir {
+    while let HirKind::Capture(capture) = hir.kind() {
+        hir = &capture.sub;
+    }
+    hir
 }
 
-impl Compiler {
-    pub fn new(size_limit: usize) -> Compiler {
+pub struct Nfa {
+    pub insts: Vec<Inst>,
+    pub start: usize,
+}
+
+/// Compiles an HIR regex into an NFA right-to-left, starting from `MATCH_IP`.
+///
+/// Each instruction stores its explicit `next` target. Compiling right-to-left
+/// means `next` is known before an instruction is created, so `inst_to_ip` can
+/// reuse identical instructions across branches. Shared suffixes (such as
+/// `101.|102.` or UTF-8 continuation bytes inside `.`) collapse to the same
+/// instruction indices, letting `DfaBuilder` merge their DFA states directly.
+pub struct Compiler<'a> {
+    size_limit: usize,
+    insts: Vec<Inst>,
+    inst_to_ip: HashMap<Inst, usize>,
+    /// Reuses zero-or-more loops (`e*`) that share the same body and `after_ip`.
+    ///
+    /// Loops are cyclic: the loop's `Inst::Or` placeholder is allocated before
+    /// its body is compiled, so `inst_to_ip` alone assigns a fresh `loop_ip` to
+    /// each copy. Grouping compiled loops by `after_ip` lets alternations like
+    /// `foo.*|bar.*` share a single loop node.
+    loops_by_after_ip: HashMap<usize, Vec<(&'a Hir, usize)>>,
+}
+
+impl<'a> Compiler<'a> {
+    pub fn new(size_limit: usize) -> Compiler<'a> {
         Compiler {
             size_limit,
-            insts: vec![],
+            insts: vec![Inst::Match, Inst::Fail],
+            inst_to_ip: HashMap::new(),
+            loops_by_after_ip: HashMap::new(),
         }
     }
 
-    pub fn compile(mut self, hir: &Hir) -> Result<Vec<Inst>, Error> {
-        self.c(hir)?;
-        self.insts.push(Inst::Match);
-        Ok(self.insts)
+    pub fn compile(mut self, hir: &'a Hir) -> Result<Nfa, Error> {
+        let start = self.compile_hir(hir, MATCH_IP)?;
+        Ok(Nfa {
+            insts: self.insts,
+            start,
+        })
     }
 
-    fn c(&mut self, hir: &Hir) -> Result<(), Error> {
-        match hir.kind() {
-            HirKind::Literal(_literal) => {
-                for byte in _literal.0.iter().cloned() {
-                    self.push(Inst::Range(byte, byte));
+    /// Compiles `hir` right-to-left, jumping to `after_ip` after `hir` matches.
+    ///
+    /// Invariant: every returned instruction index other than `FAIL_IP` has a
+    /// path to `MATCH_IP`. Branches that evaluate to `FAIL_IP` are dropped from
+    /// `Inst::Or` and range transitions, keeping unreachable branches out of
+    /// the NFA.
+    fn compile_hir(&mut self, hir: &'a Hir, after_ip: usize) -> Result<usize, Error> {
+        let ip = match hir.kind() {
+            HirKind::Empty => after_ip,
+            HirKind::Literal(literal) => {
+                let mut cur_ip = after_ip;
+                for &byte in literal.0.iter().rev() {
+                    cur_ip = self.get_or_push_range(byte, byte, cur_ip);
                 }
+                cur_ip
             }
             HirKind::Class(class) => match class {
-                Class::Bytes(_) => return Err(Error::NoBytes),
-                Class::Unicode(class_unicode) => self.compile_class(class_unicode)?,
-            },
-            HirKind::Empty => {}
-            HirKind::Capture(capture) => self.c(&capture.sub)?,
-            HirKind::Concat(hirs) => {
-                for hir in hirs {
-                    self.c(hir)?;
+                Class::Bytes(class_bytes) => {
+                    if class_bytes.ranges().is_empty() {
+                        FAIL_IP
+                    } else {
+                        return Err(Error::NoBytes);
+                    }
                 }
+                Class::Unicode(class_unicode) => {
+                    if after_ip == FAIL_IP {
+                        FAIL_IP
+                    } else {
+                        let mut branch_ips = Vec::new();
+                        for &char_range in class_unicode.ranges() {
+                            for utf8_seq in Utf8Sequences::new(char_range.start(), char_range.end())
+                            {
+                                let mut cur_ip = after_ip;
+                                for byte_range in utf8_seq.as_slice().iter().rev() {
+                                    cur_ip = self.get_or_push_range(
+                                        byte_range.start,
+                                        byte_range.end,
+                                        cur_ip,
+                                    );
+                                }
+                                branch_ips.push(cur_ip);
+                            }
+                        }
+                        self.any_of(branch_ips)
+                    }
+                }
+            },
+            HirKind::Capture(capture) => self.compile_hir(&capture.sub, after_ip)?,
+            HirKind::Concat(hirs) => {
+                let mut cur_ip = after_ip;
+                for sub in hirs.iter().rev() {
+                    cur_ip = self.compile_hir(sub, cur_ip)?;
+                }
+                cur_ip
             }
             HirKind::Alternation(es) => {
-                if es.is_empty() {
-                    return Ok(());
+                let mut branch_ips = Vec::with_capacity(es.len());
+                for e in es {
+                    branch_ips.push(self.compile_hir(e, after_ip)?);
                 }
-                let mut jmps_to_end = vec![];
-                for e in &es[0..es.len() - 1] {
-                    let split = self.push_empty_split();
-                    let j1 = self.insts.len();
-                    self.c(e)?;
-                    jmps_to_end.push(self.push_empty_jump());
-                    let j2 = self.insts.len();
-                    self.set_split(split, j1, j2);
-                }
-                self.c(&es[es.len() - 1])?;
-                let end = self.insts.len();
-                for jmp_to_end in jmps_to_end {
-                    self.set_jump(jmp_to_end, end);
-                }
+                self.any_of(branch_ips)
             }
             HirKind::Repetition(repetition) => {
-                if repetition.greedy == false {
+                if !repetition.greedy {
                     return Err(Error::NoLazy);
                 }
-                if let Some(max) = repetition.max {
-                    // Min / max
-                    let min = repetition.min;
-                    for _ in 0..min {
-                        self.c(&repetition.sub)?;
-                    }
-                    let (mut splits, mut starts) = (vec![], vec![]);
-                    for _ in min..max {
-                        splits.push(self.push_empty_split());
-                        starts.push(self.insts.len());
-                        self.c(&repetition.sub)?;
-                    }
-                    let end = self.insts.len();
-                    for (split, start) in splits.into_iter().zip(starts) {
-                        self.set_split(split, start, end);
-                    }
+                if after_ip == FAIL_IP {
+                    // Still compile the subexpression so invalid constructs
+                    // (such as lazy quantifiers or byte classes) are rejected.
+                    self.compile_hir(&repetition.sub, FAIL_IP)?;
+                    FAIL_IP
                 } else {
-                    // At least
+                    let mut cur_ip = if let Some(max) = repetition.max {
+                        let mut cur_ip = after_ip;
+                        for _ in repetition.min..max {
+                            let body_ip = self.compile_hir(&repetition.sub, cur_ip)?;
+                            let optional_ip = self.either(body_ip, after_ip);
+                            if optional_ip == cur_ip {
+                                break;
+                            }
+                            cur_ip = optional_ip;
+                        }
+                        cur_ip
+                    } else {
+                        self.compile_zero_or_more(&repetition.sub, after_ip)?
+                    };
                     for _ in 0..repetition.min {
-                        self.c(&repetition.sub)?;
+                        cur_ip = self.compile_hir(&repetition.sub, cur_ip)?;
                     }
-                    let j1 = self.insts.len();
-                    let split = self.push_empty_split();
-                    let j2 = self.insts.len();
-                    self.c(&repetition.sub)?;
-                    let jmp = self.push_empty_jump();
-                    let j3 = self.insts.len();
-
-                    self.set_jump(jmp, j1);
-                    self.set_split(split, j2, j3);
+                    cur_ip
                 }
             }
             HirKind::Look(_) => return Err(Error::NoEmpty),
-        }
-        self.check_size()
+        };
+        self.check_size()?;
+        Ok(ip)
     }
 
-    fn compile_class(&mut self, class: &ClassUnicode) -> Result<(), Error> {
-        if class.ranges().is_empty() {
-            return Ok(());
+    fn compile_zero_or_more(&mut self, sub: &'a Hir, after_ip: usize) -> Result<usize, Error> {
+        let body_hir = strip_outer_captures(sub);
+        if let Some(loops) = self.loops_by_after_ip.get(&after_ip) {
+            if let Some(&(_, existing_ip)) = loops.iter().find(|&&(hir, _)| hir == body_hir) {
+                return Ok(existing_ip);
+            }
         }
-        let mut jmps = vec![];
-        for &r in &class.ranges()[0..class.ranges().len() - 1] {
-            let split = self.push_empty_split();
-            let j1 = self.insts.len();
-            self.compile_class_range(r)?;
-            jmps.push(self.push_empty_jump());
-            let j2 = self.insts.len();
-            self.set_split(split, j1, j2);
-        }
-        self.compile_class_range(*class.ranges().last().unwrap())?;
-        let end = self.insts.len();
-        for jmp in jmps {
-            self.set_jump(jmp, end);
-        }
-        Ok(())
+        let loop_ip = self.push_inst(Inst::Or(FAIL_IP, FAIL_IP));
+        let body_ip = self.compile_hir(body_hir, loop_ip)?;
+        let start_ip = if body_ip == loop_ip || body_ip == FAIL_IP {
+            after_ip
+        } else {
+            self.insts[loop_ip] = Inst::Or(body_ip, after_ip);
+            loop_ip
+        };
+        self.loops_by_after_ip
+            .entry(after_ip)
+            .or_default()
+            .push((body_hir, start_ip));
+        Ok(start_ip)
     }
 
-    fn compile_class_range(&mut self, char_range: ClassUnicodeRange) -> Result<(), Error> {
-        let mut it = Utf8Sequences::new(char_range.start(), char_range.end()).peekable();
-        let mut jmps = vec![];
-        let mut utf8_ranges = it.next().expect("non-empty char class");
-        while it.peek().is_some() {
-            let split = self.push_empty_split();
-            let j1 = self.insts.len();
-            self.compile_utf8_ranges(&utf8_ranges);
-            jmps.push(self.push_empty_jump());
-            let j2 = self.insts.len();
-            self.set_split(split, j1, j2);
-            utf8_ranges = it.next().unwrap(); // because peek says so
+    #[inline]
+    fn get_or_push_range(&mut self, start: u8, end: u8, next: usize) -> usize {
+        if next == FAIL_IP {
+            return FAIL_IP;
         }
-        self.compile_utf8_ranges(&utf8_ranges);
-        let end = self.insts.len();
-        for jmp in jmps {
-            self.set_jump(jmp, end);
-        }
-        Ok(())
+        self.get_or_push_inst(Inst::Range { start, end, next })
     }
 
-    fn compile_utf8_ranges(&mut self, utf8_ranges: &Utf8Sequence) {
-        for r in utf8_ranges {
-            self.push(Inst::Range(r.start, r.end));
+    /// Combines two branch indices with `Inst::Or`, ordering `(lo, hi)` so
+    /// swapped branches produce the same instruction for `inst_to_ip`.
+    #[inline]
+    fn either(&mut self, first_ip: usize, second_ip: usize) -> usize {
+        if first_ip == FAIL_IP {
+            return second_ip;
         }
+        if second_ip == FAIL_IP || first_ip == second_ip {
+            return first_ip;
+        }
+        self.get_or_push_inst(Inst::Or(first_ip.min(second_ip), first_ip.max(second_ip)))
+    }
+
+    /// Deduplicates and sorts `branch_ips` so alternations with different
+    /// branch orders produce identical `Inst::Or` chains.
+    fn any_of(&mut self, mut branch_ips: Vec<usize>) -> usize {
+        branch_ips.retain(|&ip| ip != FAIL_IP);
+        branch_ips.sort_unstable();
+        branch_ips.dedup();
+        branch_ips
+            .into_iter()
+            .rev()
+            .reduce(|acc, ip| self.either(ip, acc))
+            .unwrap_or(FAIL_IP)
+    }
+
+    #[inline]
+    fn get_or_push_inst(&mut self, inst: Inst) -> usize {
+        if let Some(&ip) = self.inst_to_ip.get(&inst) {
+            return ip;
+        }
+        let ip = self.push_inst(inst);
+        self.inst_to_ip.insert(inst, ip);
+        ip
+    }
+
+    #[inline]
+    fn push_inst(&mut self, inst: Inst) -> usize {
+        let ip = self.insts.len();
+        self.insts.push(inst);
+        ip
     }
 
     fn check_size(&self) -> Result<(), Error> {
@@ -156,54 +237,6 @@ impl Compiler {
             Err(Error::CompiledTooBig(self.size_limit))
         } else {
             Ok(())
-        }
-    }
-
-    /// Appends the given instruction to the program.
-    #[inline]
-    fn push(&mut self, x: Inst) {
-        self.insts.push(x)
-    }
-
-    /// Appends an *empty* `Split` instruction to the program and returns
-    /// the index of that instruction. (The index can then be used to "patch"
-    /// the actual locations of the split in later.)
-    #[inline]
-    fn push_empty_split(&mut self) -> usize {
-        self.insts.push(Inst::Split(0, 0));
-        self.insts.len() - 1
-    }
-
-    /// Sets the left and right locations of a `Split` instruction at index
-    /// `i` to `pc1` and `pc2`, respectively.
-    /// If the instruction at index `i` isn't a `Split` instruction, then
-    /// `panic!` is called.
-    #[inline]
-    fn set_split(&mut self, i: usize, pc1: usize, pc2: usize) {
-        let split = &mut self.insts[i];
-        match *split {
-            Inst::Split(_, _) => *split = Inst::Split(pc1, pc2),
-            _ => panic!("BUG: Invalid split index."),
-        }
-    }
-
-    /// Appends an *empty* `Jump` instruction to the program and returns the
-    /// index of that instruction.
-    #[inline]
-    fn push_empty_jump(&mut self) -> usize {
-        self.insts.push(Inst::Jump(0));
-        self.insts.len() - 1
-    }
-
-    /// Sets the location of a `Jump` instruction at index `i` to `pc`.
-    /// If the instruction at index `i` isn't a `Jump` instruction, then
-    /// `panic!` is called.
-    #[inline]
-    fn set_jump(&mut self, i: usize, pc: usize) {
-        let jmp = &mut self.insts[i];
-        match *jmp {
-            Inst::Jump(_) => *jmp = Inst::Jump(pc),
-            _ => panic!("BUG: Invalid jump index."),
         }
     }
 }
