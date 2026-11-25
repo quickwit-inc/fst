@@ -6,6 +6,8 @@ mod compile;
 mod dfa;
 mod error;
 mod sparse;
+#[cfg(test)]
+mod tests;
 
 pub use self::error::Error;
 
